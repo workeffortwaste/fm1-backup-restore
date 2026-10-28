@@ -2,7 +2,7 @@
 
 _Back up and restore your M-VAVE FM-1 from an Android phone._
 
-Back up your M-VAVE FM-1 and restore it whenever you need to. Each backup is a complete snapshot you can return to: the firmware, settings, projects, patches and other data stored in flash, exactly as they were when you saved it. Restore puts that data back byte for byte, leaving the protected bootloader alone.
+Back up your M-VAVE FM-1 and restore it whenever you need to from your Android phone. Each backup is a complete flash snapshot you can return to at any point; the **_firmware_**, **_settings_**, **_projects_**, **_songs_**, and other data, stored exactly as they were when you saved it. Restore puts that data back byte for byte, leaving the protected bootloader completely untouched.
 
 <p align="center">
   <img src="https://github.com/workeffortwaste/fm1-backup-restore/releases/latest/download/custom-black.png" width="220" alt="Backup library in the Black theme">
@@ -13,23 +13,23 @@ Back up your M-VAVE FM-1 and restore it whenever you need to. Each backup is a c
 
 ## Use cases
 
-### Keep a factory-fresh backup
+#### Keep a factory-fresh backup
 
 Keep a full-flash snapshot from when your FM-1 first arrives, so you can always return to a byte for byte factory state at the tap of a button.
 
-### Save songs and projects
+#### Save songs and projects
 
 Back up your songs, projects and patches together in one complete flash snapshot and return to it any any time.
 
-### Disaster recovery
+#### Disaster recovery
 
 Restore a known-good backup if an experiment or a change leaves the FM-1 in a state you don't want.
 
-### Firmware hopping
+#### Firmware hopping
 
 Switch between saved firmware backups, or restore your own clean base before installing new firmware, without worrying about settings or data from the last firmware being strewn across your FM-1.
 
-### Tinkering with your FM-1
+#### Tinkering with your FM-1
 
 You just like playing with the new shiny thing for your FM-1
 
