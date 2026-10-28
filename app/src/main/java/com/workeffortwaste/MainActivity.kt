@@ -1137,6 +1137,7 @@ class MainActivity : ComponentActivity() {
         darkTheme: Boolean,
     ) {
         val state = model.state
+        val v15RecoveryState = model.v15RecoveryState
         LaunchedEffect(state.autoConnectPending, state.device, state.busy, updater.installerOpen) {
             if (state.autoConnectPending && state.device != null && !updater.installerOpen) {
                 onConnect()
@@ -1257,8 +1258,9 @@ class MainActivity : ComponentActivity() {
         }
         val pickerAvailable = !choosingFile && !state.libraryLoading && savedRestore == null && deleteSource == null &&
                 state.selectedImport == null
-        val editable = !state.busy && pickerAvailable
-        val operationEligible = !state.busy && state.ready && batteryExempt && !state.libraryLoading
+        val editable = !state.busy && !v15RecoveryState.working && pickerAvailable
+        val operationEligible = !state.busy && state.ready && batteryExempt && !state.libraryLoading &&
+                !v15RecoveryState.working
         if (savedRestore != null) {
             val savedEntry = state.backups.find { it.id == savedRestore }
             RestoreConfirmationDialog(
@@ -1404,6 +1406,11 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
+        V15RecoveryDialog(
+            state = v15RecoveryState,
+            onDismiss = model::dismissV15RecoveryDialog,
+            onCreate = model::createV15RecoveryBackup,
+        )
         if (state.showTransferProgress) {
             TransferProgressScreen(
                 operation = requireNotNull(state.transfer),
@@ -1565,6 +1572,15 @@ class MainActivity : ComponentActivity() {
                                                     "*/*"
                                                 )
                                             )
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Create recovery image") },
+                                        shape = MenuDefaults.middleItemShape,
+                                        enabled = editable && batteryExempt,
+                                        onClick = {
+                                            showAppMenu = false
+                                            model.showV15RecoveryDialog()
                                         },
                                     )
                                     DropdownMenuItem(

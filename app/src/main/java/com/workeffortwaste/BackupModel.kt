@@ -26,11 +26,14 @@ import com.workeffortwaste.protocol.FlashInfo
 import com.workeffortwaste.protocol.FlashRestore
 import com.workeffortwaste.protocol.ProtocolException
 import com.workeffortwaste.protocol.RestoreImage
+import com.workeffortwaste.protocol.V15RecoveryImage
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -61,6 +64,15 @@ enum class TransferOutcome {
 }
 
 data class SelectedImport(val sourceName: String, val sha256: String)
+
+data class V15RecoveryState(
+    val showDialog: Boolean = false,
+    val working: Boolean = false,
+    val progress: Int? = null,
+    val phase: String = "",
+    val message: String = "",
+    val completed: Boolean = false,
+)
 
 internal fun String.withTerminalPeriod(): String = when {
     isBlank() || endsWith(".") || endsWith("...") || endsWith("\u2026") -> this
@@ -222,6 +234,8 @@ class BackupModel(
 
     /** Compose observes snapshots; background work must publish through [post]. */
     var state by mutableStateOf(BackupState())
+        private set
+    var v15RecoveryState by mutableStateOf(V15RecoveryState())
         private set
 
     /** Delivers worker results to Compose and serializes them with activity/broadcast callbacks. */
@@ -587,6 +601,139 @@ class BackupModel(
     private fun post(update: (BackupState) -> BackupState) {
         mainHandler.post {
             state = update(state).withCurrentBackupHash()
+        }
+    }
+
+    private fun postV15Recovery(update: (V15RecoveryState) -> V15RecoveryState) {
+        mainHandler.post { v15RecoveryState = update(v15RecoveryState) }
+    }
+
+    fun showV15RecoveryDialog() {
+        if (state.busy || state.libraryLoading || v15RecoveryState.working) return
+        v15RecoveryState = V15RecoveryState(showDialog = true)
+    }
+
+    fun dismissV15RecoveryDialog() {
+        if (!v15RecoveryState.working) v15RecoveryState = V15RecoveryState()
+    }
+
+    fun createV15RecoveryBackup() {
+        if (!v15RecoveryState.showDialog || v15RecoveryState.working || state.busy ||
+            state.libraryLoading
+        ) return
+        v15RecoveryState = v15RecoveryState.copy(
+            working = true,
+            progress = 0,
+            phase = "Downloading official V15 firmware",
+            message = "",
+            completed = false,
+        )
+        worker.execute {
+            var pending: File? = null
+            try {
+                var lastProgress = -1
+                val packageBytes = downloadV15Package { downloaded ->
+                    val progress = (downloaded * 100 / V15RecoveryImage.PACKAGE_SIZE).toInt()
+                    if (progress != lastProgress) {
+                        lastProgress = progress
+                        postV15Recovery { it.copy(progress = progress) }
+                    }
+                }
+                postV15Recovery {
+                    it.copy(progress = null, phase = "Verifying package and building recovery image")
+                }
+                val image = V15RecoveryImage.build(packageBytes)
+                postV15Recovery { it.copy(phase = "Verifying and saving recovery backup") }
+
+                val file = backupStore.createPending()
+                pending = file
+                BufferedOutputStream(file.outputStream(), 65536).use { it.write(image) }
+                val entry = backupStore.publish(
+                    file,
+                    V15RecoveryImage.IMAGE_SHA256,
+                    V15_RECOVERY_BACKUP_NAME,
+                )
+                pending = null
+                post { current ->
+                    current.copy(
+                        backups = (current.backups + entry)
+                            .sortedWith(compareByDescending<BackupEntry> { it.createdAt }.thenByDescending { it.id }),
+                    )
+                }
+                postV15Recovery {
+                    it.copy(
+                        working = false,
+                        progress = 100,
+                        phase = "",
+                        message = "FM-1_015 RECOVERY was added to your backup library. It has not been restored.",
+                        completed = true,
+                    )
+                }
+            } catch (failure: Exception) {
+                val deleted = try {
+                    pending?.let(backupStore::discard) ?: true
+                } catch (cleanupFailure: Exception) {
+                    Log.w("BackupModel", "Could not remove incomplete V15 recovery backup", cleanupFailure)
+                    false
+                }
+                val cleanupMessage = if (deleted) "" else " An incomplete private file could not be removed."
+                Log.w("BackupModel", "Could not create V15 recovery backup", failure)
+                postV15Recovery {
+                    it.copy(
+                        working = false,
+                        progress = null,
+                        phase = "",
+                        message = "Could not create recovery backup: ${failure.message ?: failure.javaClass.simpleName}.$cleanupMessage",
+                        completed = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun downloadV15Package(onProgress: (Long) -> Unit): ByteArray {
+        val connection = URL(V15RecoveryImage.SOURCE_URL)
+            .openConnection() as HttpURLConnection
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 20_000
+        connection.instanceFollowRedirects = false
+        try {
+            val response = connection.responseCode
+            if (response != HttpURLConnection.HTTP_OK) {
+                throw IOException("Firmware download failed with HTTP $response.")
+            }
+            if (connection.url.protocol != "https" ||
+                connection.url.host != "raw.githubusercontent.com"
+            ) {
+                throw IOException("Firmware download redirected to an unexpected host.")
+            }
+            val declaredLength = connection.contentLengthLong
+            if (declaredLength > 0 &&
+                declaredLength != V15RecoveryImage.PACKAGE_SIZE.toLong()
+            ) {
+                throw IOException("Downloaded package size does not match the expected V15 package.")
+            }
+            val output = ByteArrayOutputStream(V15RecoveryImage.PACKAGE_SIZE)
+            connection.inputStream.use { input ->
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > V15RecoveryImage.PACKAGE_SIZE) {
+                        throw IOException("Downloaded package exceeds the expected V15 size.")
+                    }
+                    output.write(buffer, 0, count)
+                    onProgress(total.toLong())
+                }
+                if (total != V15RecoveryImage.PACKAGE_SIZE) {
+                    throw IOException("Firmware download was incomplete.")
+                }
+            }
+            return output.toByteArray()
+        } finally {
+            connection.disconnect()
         }
     }
 
@@ -1404,7 +1551,8 @@ class BackupModel(
     }
 
     private companion object {
-            const val PINNED_BACKUP_IDS = "pinned_backup_ids"
+        const val V15_RECOVERY_BACKUP_NAME = "FM-1_015 RECOVERY"
+        const val PINNED_BACKUP_IDS = "pinned_backup_ids"
         const val KEEPALIVE_INTERVAL_MS = 1000L
         const val DISCOVERY_TIMEOUT_MS = 3000L
     }

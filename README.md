@@ -71,6 +71,14 @@ Read the confirmation carefully: restoring replaces the FM-1's firmware, setting
 
 Keep the USB cable and power connected until the restore has finished and been verified. Restores cannot be cancelled once started, and an interrupted restore can leave the FM-1 unable to boot normally.
 
+### Create a stock v15 recovery snapshot
+
+Didn't manage to take a backup of your device before you started flashing custom firmware?
+
+Choose **Create recovery image** from the top menu. The app downloads and verifies the official v15 firmware update directly from M-Vave, reconstructs a stock v15 image, and adds **FM-1_015 RECOVERY** to your library.
+
+> **How's this work?** <br/>It takes all the regions of data that are available in the v15 .fwsc update and creates a complete flash snapshot using them. Any regions of data that are missing from the .fwsc (settings, BTIF) are automatically recreated when the FM-1 boots.
+
 ## Themes
 
 The app is built with **Material 3 Expressive**, with support for your Material You dynamic colors alongside the built-in FM-1 styled themes.
