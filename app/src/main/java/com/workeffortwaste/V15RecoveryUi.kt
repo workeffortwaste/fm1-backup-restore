@@ -36,11 +36,6 @@ internal fun V15RecoveryDialog(
                     "Downloads and verifies the official v15 firmware update directly from M-Vave, " +
                             "reconstructs a stock v15 image, and adds FM-1_015 RECOVERY to your library.",
                 )
-                Text(
-                    "This is not a factory backup: settings and Bluetooth identity are erased. " +
-                            "Restoring it creates a fresh Bluetooth identity. Tested on one device; " +
-                            "other units are unverified.",
-                )
                 if (state.working) {
                     Text(state.phase, style = MaterialTheme.typography.titleSmall)
                     state.progress?.let { progress ->
