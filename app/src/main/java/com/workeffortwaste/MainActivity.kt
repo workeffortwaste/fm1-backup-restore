@@ -891,10 +891,6 @@ class MainActivity : ComponentActivity() {
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         SectionHeading("App icon")
-                        Text(
-                            "Choose an icon independently of your theme. The app will close to apply the icon.",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
                         if (!updateDeviceIdle) {
                             Text("Wait for the current device operation to finish before changing the app icon.")
                         }
