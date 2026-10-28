@@ -1,0 +1,18 @@
+# Android build output and local tooling
+.gradle/
+.kotlin/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Test artifacts
+screenshots/
+backups/
+scripts/
+*mockup*
+
+# Local notes on the project so I don't forget decisions I made; do not publish.
+PRIVATE.md
+DEVELOPMENT.md

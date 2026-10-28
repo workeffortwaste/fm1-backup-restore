@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="432"
+    android:viewportHeight="432">
+    <!-- The system's 288 dp icon canvas contains the welcome screen's 72 dp icon. -->
+    <group android:translateX="162" android:translateY="162">
+        <path
+            android:fillColor="@android:color/transparent"
+            android:strokeColor="?android:colorAccent"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M28,54 C32.33,42.48 36.67,36 41,36 C45.33,36 49.67,42.48 54,54 C58.33,65.52 62.67,72 67,72 C71.33,72 75.67,65.52 80,54" />
+    </group>
+</vector>

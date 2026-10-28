@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Fm1SplashBase" parent="AppTheme">
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_wave</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+        <item name="android:windowSplashScreenBackground">?android:colorBackground</item>
+        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:statusBarColor">?android:colorBackground</item>
+        <item name="android:navigationBarColor">?android:colorBackground</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+    </style>
+    <style name="Fm1SplashBlack" parent="Fm1SplashBase">
+        <item name="android:colorAccent">#FF5A5F</item>
+        <item name="android:colorBackground">#292B2D</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+    <style name="Fm1SplashGreen" parent="Fm1SplashBlack">
+        <item name="android:colorAccent">#62CFB4</item>
+    </style>
+    <style name="Fm1SplashOrange" parent="Fm1SplashBase">
+        <item name="android:colorAccent">#5C1D0B</item>
+        <item name="android:colorBackground">#D95035</item>
+    </style>
+    <style name="Fm1SplashPurple" parent="Fm1SplashBase">
+        <item name="android:colorAccent">#713B78</item>
+        <item name="android:colorBackground">#E8B9D8</item>
+    </style>
+    <style name="Fm1SplashBlue" parent="Fm1SplashBase">
+        <item name="android:colorAccent">#4B5256</item>
+        <item name="android:colorBackground">#E9E1D6</item>
+    </style>
+</resources>
