@@ -6,6 +6,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BackupStateTest {
+    @Test fun userDisconnectSuppressesDiscoveryUntilARealDetach() {
+        val disconnected = BackupState(
+            deviceMode = DeviceMode.DOWNLOAD,
+            discoveryActive = true,
+            ready = true,
+            firmwareIdentity = "JIANT 1.0",
+            hash = "a".repeat(64),
+        ).disconnectByUser()
+
+        assertTrue(disconnected.discoverySuppressedByUser)
+        assertFalse(disconnected.discoveryActive)
+        assertFalse(disconnected.ready)
+        assertEquals(DeviceMode.SEARCHING, disconnected.deviceMode)
+        assertEquals("FM-1 disconnected", disconnected.status.heading)
+        assertEquals(null, disconnected.firmwareIdentity)
+        assertEquals("", disconnected.hash)
+        assertFalse(disconnected.rediscoverAfterDisconnect().discoverySuppressedByUser)
+    }
+
     @Test fun disconnectClearsSessionAndRestartsDiscovery() {
         val disconnected = BackupState(
             deviceMode = DeviceMode.DOWNLOAD,

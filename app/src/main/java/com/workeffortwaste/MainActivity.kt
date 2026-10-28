@@ -1490,15 +1490,21 @@ class MainActivity : ComponentActivity() {
                     },
                     actions = {
                         IconButton(
-                            onClick = { onButtonClick(model::refreshDevice) },
+                            onClick = {
+                                onButtonClick {
+                                    if (state.ready) model.disconnect() else model.refreshDevice()
+                                }
+                            },
                             enabled = editable && batteryExempt,
                             colors = IconButtonDefaults.iconButtonColors(
                                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             ),
                         ) {
                             Icon(
-                                painter = painterResource(R.drawable.ic_refresh),
-                                contentDescription = "Refresh",
+                                painter = painterResource(
+                                    if (state.ready) R.drawable.ic_eject else R.drawable.ic_refresh,
+                                ),
+                                contentDescription = if (state.ready) "Disconnect FM-1" else "Refresh",
                             )
                         }
                         Box {

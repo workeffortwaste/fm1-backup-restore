@@ -123,11 +123,32 @@ internal fun BackupState.rediscoverAfterDisconnect(): BackupState = copy(
     device = null,
     deviceMode = DeviceMode.SEARCHING,
     multipleDevices = false,
+    discoverySuppressedByUser = false,
     ready = false,
     discoveryTimedOut = false,
     autoConnectPending = false,
     firmwareIdentity = null,
     status = StatusMessage(),
+    hash = "",
+)
+
+internal fun BackupState.disconnectByUser(): BackupState = copy(
+    device = null,
+    multipleDevices = false,
+    deviceMode = DeviceMode.SEARCHING,
+    discoveryActive = false,
+    discoverySuppressedByUser = true,
+    discoveryTimedOut = false,
+    findingBootloader = false,
+    autoConnectPending = false,
+    ready = false,
+    readingFirmwareIdentity = false,
+    status = statusMessage("FM-1 disconnected", "Tap Refresh to reconnect"),
+    firmwareIdentity = null,
+    progress = 0f,
+    transfer = null,
+    progressKnown = false,
+    restoreRetryAvailable = false,
     hash = "",
 )
 
@@ -146,6 +167,7 @@ data class BackupState(
     val multipleDevices: Boolean = false,
     val deviceMode: DeviceMode = DeviceMode.SEARCHING,
     val discoveryActive: Boolean = false,
+    val discoverySuppressedByUser: Boolean = false,
     val discoveryTimedOut: Boolean = false,
     val findingBootloader: Boolean = false,
     /** Set once after Connect to Device finds the bootloader USB interface; the UI then connects. */
@@ -211,6 +233,7 @@ class BackupModel(
     /** Main-thread cancellation flag checked by the worker between bounded I/O commands. */
     private val cancelled = AtomicBoolean()
 
+    private var userDisconnectedDeviceName: String? = null
     /** Worker-owned session handles, cleared together so a failed session cannot be reused. */
     private var transport: BotTransport? = null
 
@@ -291,7 +314,7 @@ class BackupModel(
                             Log.w("BackupModel", "Could not close failed idle session", closeFailure)
                         }
                         post { current ->
-                            if (current.busy) current else current.copy(
+                            if (current.busy || current.discoverySuppressedByUser) current else current.copy(
                                 ready = false,
                                 status = statusMessage("Connection failed", "FM-1 stopped responding. Tap Refresh"),
                             )
@@ -348,6 +371,7 @@ class BackupModel(
 
     /** Refreshes candidates without guessing which device to use when several match. */
     fun refresh() {
+        if (state.discoverySuppressedByUser) return
         val setupComplete = application.getSharedPreferences("setup", Context.MODE_PRIVATE)
             .getBoolean("complete", false)
         val batteryExempt = application.getSystemService(PowerManager::class.java)
@@ -394,6 +418,8 @@ class BackupModel(
     /** Keeps a verified connection; otherwise clears stale feedback and rediscovers without rebooting. */
     fun refreshDevice() {
         if (state.busy) return
+        state = state.copy(discoverySuppressedByUser = false)
+        userDisconnectedDeviceName = null
         refresh()
         if (state.ready) return
         firmwareDeviceName = null
@@ -423,6 +449,27 @@ class BackupModel(
             }
         }
         refresh()
+    }
+
+    /** Closes the idle session and waits for an explicit Refresh before discovering the device again. */
+    fun disconnect() {
+        if (state.busy || !state.ready) return
+        userDisconnectedDeviceName = state.device?.deviceName ?: activeDeviceName
+        firmwareDeviceName = null
+        firmwareMidiId = null
+        queriedMidiId = null
+        pendingPermission = null
+        retryRestoreSource = null
+        mainHandler.removeCallbacks(discoveryTimeout)
+        discoveryTimerPending = false
+        state = state.disconnectByUser()
+        worker.execute {
+            try {
+                closeSession()
+            } catch (failure: IOException) {
+                Log.w("BackupModel", "Could not close USB session after disconnect", failure)
+            }
+        }
     }
 
     private fun readDiscoveredIdentity(midiId: Int) {
@@ -507,13 +554,21 @@ class BackupModel(
     /** Invalidates idle sessions; active transfers handle the expected loader reboot themselves. */
     fun detached(device: UsbDevice?) {
         val permissionDetached = device != null && device.deviceName == pendingPermission
+        val userDisconnectedDeviceDetached = device != null &&
+                (device.deviceName == userDisconnectedDeviceName || AndroidFm1Midi.isSupportedDevice(device))
+        val supportedDeviceDetached = device != null &&
+                (device.deviceName == state.device?.deviceName ||
+                        device.deviceName == activeDeviceName ||
+                        device.deviceName == userDisconnectedDeviceName ||
+                        AndroidFm1Midi.isSupportedDevice(device))
+        if (userDisconnectedDeviceDetached) {
+            userDisconnectedDeviceName = null
+            state = state.copy(discoverySuppressedByUser = false)
+        }
         if (permissionDetached) {
             pendingPermission = null
             state = state.copy(busy = false)
         }
-        val supportedDeviceDetached = device != null &&
-                (device.deviceName == state.device?.deviceName ||
-                        device.deviceName == activeDeviceName || AndroidFm1Midi.isSupportedDevice(device))
         if (!state.busy && (permissionDetached || supportedDeviceDetached)) {
             mainHandler.removeCallbacks(discoveryTimeout)
             discoveryTimerPending = false
