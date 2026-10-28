@@ -120,7 +120,6 @@ The app checks the latest stable GitHub Release when opened, at most once every 
 
 What would you like to see next? More themes? Firmware flashing? Hassle me on social media or [open an issue](https://github.com/workeffortwaste/fm1-backup-restore/issues).
 
-
 ## Troubleshooting
 
 ### FM-1 not recognised
@@ -138,3 +137,7 @@ If you find the app useful, please consider supporting the work that goes into c
 Chris Johnson - [defaced.dev](https://defaced.dev) - [@defaced.dev](https://bsky.app/profile/defaced.dev) (Bluesky)
 
 What would you like to see next? More themes? Firmware flashing? Hassle me on social media or [open an issue](https://github.com/workeffortwaste/fm1-backup-restore/issues).
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
