@@ -88,6 +88,7 @@ Choose **App icon** in _Settings_ to pick an icon independently of your theme. *
     <td align="center"><img src="https://github.com/user-attachments/assets/779ac6de-17e2-48b8-b1a9-a0658a765b3b" width="180" alt="Purple theme"><br>Purple</td>
     <td align="center"><img src="https://github.com/user-attachments/assets/aed34524-89a9-4f18-8275-1f5f4a95f1cd" width="180" alt="Green theme"><br>Green</td>
     <td align="center"><img src="https://github.com/user-attachments/assets/b4ba2466-d18b-4bab-ac8d-877d5e501b10" width="180" alt="Blue theme"><br>Blue</td>
+    <td align="center"><img src="https://github.com/user-attachments/assets/ab6e7954-8069-4ecb-a36c-e36199517705" width="180" alt="Gray theme"><br>Gray</td>
   </tr>
 </table>
 
