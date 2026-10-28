@@ -50,6 +50,7 @@ class ScreenshotCapture {
         Theme("custom-purple", "fm1", "purple"),
         Theme("custom-green", "fm1", "green"),
         Theme("custom-blue", "fm1", "blue"),
+        Theme("custom-gray", "fm1", "gray"),
         Theme("material-you", "material_you", null),
     )
 

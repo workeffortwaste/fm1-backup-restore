@@ -10,5 +10,7 @@
     <color name="launcher_green_wave">#62CFB4</color>
     <color name="launcher_blue_background">#E9E1D6</color>
     <color name="launcher_blue_wave">#4B5256</color>
+    <color name="launcher_gray_background">#E9E1D6</color>
+    <color name="launcher_gray_wave">#3B3E41</color>
     <color name="splash_background">#F7F7FA</color>
 </resources>

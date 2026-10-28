@@ -33,4 +33,8 @@
         <item name="android:colorAccent">#4B5256</item>
         <item name="android:colorBackground">#E9E1D6</item>
     </style>
+    <style name="Fm1SplashGray" parent="Fm1SplashBase">
+        <item name="android:colorAccent">#3B3E41</item>
+        <item name="android:colorBackground">#E9E1D6</item>
+    </style>
 </resources>

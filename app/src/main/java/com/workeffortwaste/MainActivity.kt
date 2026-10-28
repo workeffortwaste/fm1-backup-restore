@@ -147,11 +147,12 @@ internal enum class Fm1Palette(
     val launcherAlias: String,
 ) {
     BLACK("black", "Black", true, R.style.Fm1SplashBlack, "LauncherBlack"),
-    ORANGE("orange", "Orange", false, R.style.Fm1SplashOrange, "LauncherOrange"),
-    PURPLE("purple", "Purple", false, R.style.Fm1SplashPurple, "LauncherPurple"),
     // Keep launcher component names stable so existing home-screen shortcuts survive upgrades.
+    BLUE("blue", "Blue", false, R.style.Fm1SplashBlue, "LauncherGraphite"),
     GREEN("green", "Green", true, R.style.Fm1SplashGreen, "LauncherTeal"),
-    BLUE("blue", "Blue", false, R.style.Fm1SplashBlue, "LauncherGraphite");
+    GRAY("gray", "Gray", false, R.style.Fm1SplashGray, "LauncherGray"),
+    ORANGE("orange", "Orange", false, R.style.Fm1SplashOrange, "LauncherOrange"),
+    PURPLE("purple", "Purple", false, R.style.Fm1SplashPurple, "LauncherPurple");
 
     companion object {
         fun fromPreference(value: String?) = when (value) {
@@ -226,6 +227,39 @@ private val fm1BlueLightColorScheme = lightColorScheme(
     inverseSurface = Color(0xFF2E3335),
     inverseOnSurface = Color(0xFFECE8E1),
     inversePrimary = Color(0xFFB9C2C6),
+)
+
+private val fm1GrayLightColorScheme = lightColorScheme(
+    primary = Color(0xFF3B3E41),
+    onPrimary = Color(0xFFF2EFE9),
+    primaryContainer = Color(0xFF3B3E41),
+    onPrimaryContainer = Color(0xFFF2EFE9),
+    secondary = Color(0xFF55585B),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFF3B3E41),
+    onSecondaryContainer = Color(0xFFF2EFE9),
+    tertiary = Color(0xFF55585B),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFF3B3E41),
+    onTertiaryContainer = Color(0xFFF2EFE9),
+    background = Color(0xFFE9E1D6),
+    onBackground = Color(0xFF26282A),
+    surface = Color(0xFFE9E1D6),
+    onSurface = Color(0xFF26282A),
+    surfaceVariant = Color(0xFFDDD4C8),
+    onSurfaceVariant = Color(0xFF55585B),
+    outline = Color(0xFF8A8D8E),
+    outlineVariant = Color(0xFFC9C1B5),
+    surfaceDim = Color(0xFFD8CFC3),
+    surfaceBright = Color(0xFFDDD4C8),
+    surfaceContainerLowest = Color(0xFFF4EEE6),
+    surfaceContainerLow = Color(0xFFEEE7DC),
+    surfaceContainer = Color(0xFFE9E1D6),
+    surfaceContainerHigh = Color(0xFFDDD4C8),
+    surfaceContainerHighest = Color(0xFFD2C9BC),
+    inverseSurface = Color(0xFF2E3133),
+    inverseOnSurface = Color(0xFFECE8E1),
+    inversePrimary = Color(0xFFBCBEC0),
 )
 
 internal val fm1BlackColorScheme = darkColorScheme(
@@ -431,6 +465,7 @@ class MainActivity : ComponentActivity() {
                     Fm1Palette.BLUE -> fm1BlueLightColorScheme
                     Fm1Palette.BLACK -> fm1BlackColorScheme
                     Fm1Palette.GREEN -> fm1GreenColorScheme
+                    Fm1Palette.GRAY -> fm1GrayLightColorScheme
                     Fm1Palette.ORANGE -> fm1OrangeColorScheme
                 }
             } else if (Build.VERSION.SDK_INT >= 31) {
