@@ -34,6 +34,10 @@ internal data class AppRelease(
 
 private const val MAX_APK_BYTES = 100 * 1024 * 1024L
 
+internal class UpdateNotReadyException : IllegalArgumentException(
+    "A newer release is available, but its APK hasn't been uploaded yet. Try again later.",
+)
+
 /** Accepts only a newer stable release with one bounded, checksum-addressed project APK. */
 internal fun parseAppRelease(json: JSONObject, installedVersion: String): AppRelease? {
     require(!json.getBoolean("draft") && !json.getBoolean("prerelease")) {
@@ -44,6 +48,7 @@ internal fun parseAppRelease(json: JSONObject, installedVersion: String): AppRel
     val assets = json.getJSONArray("assets")
     val matches = (0 until assets.length()).map { assets.getJSONObject(it) }
         .filter { it.getString("name") == "fm1-backup-restore.apk" }
+    if (matches.isEmpty()) throw UpdateNotReadyException()
     require(matches.size == 1) { "The release must contain one fm1-backup-restore.apk asset." }
     val asset = matches.single()
     val digest = asset.getString("digest")
@@ -117,6 +122,9 @@ internal class AppUpdateModel(application: Application) : AndroidViewModel(appli
                 )
             } catch (failure: CancellationException) {
                 throw failure
+            } catch (failure: UpdateNotReadyException) {
+                state = state.copy(release = null, apk = null)
+                reportFailure("Update not ready", failure)
             } catch (failure: Exception) {
                 reportFailure("Could not check for updates", failure)
             }

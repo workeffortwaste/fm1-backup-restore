@@ -54,6 +54,21 @@ class AppUpdateTest {
         assertRejected { parseAppRelease(duplicate, "0.1") }
     }
 
+    @Test fun reportsNewerReleaseWithoutExpectedApkAsNotReady() {
+        val missing = release().put("assets", JSONArray())
+        val renamed = release()
+        renamed.getJSONArray("assets").getJSONObject(0).put("name", "other.apk")
+        for (metadata in listOf(missing, renamed)) {
+            val failure = runCatching { parseAppRelease(metadata, "0.1") }.exceptionOrNull()
+            assertTrue("Expected update not ready, got $failure", failure is UpdateNotReadyException)
+            assertEquals(
+                "A newer release is available, but its APK hasn't been uploaded yet. Try again later.",
+                failure?.message,
+            )
+            assertNull(parseAppRelease(metadata, "0.2"))
+        }
+    }
+
     @Test fun enforcesDigestOriginAndExactSizeLimit() {
         for (digest in listOf("", "md5:abc", "sha256:bad", "sha256:${"z".repeat(64)}")) {
             val metadata = release()
