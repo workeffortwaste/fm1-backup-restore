@@ -1162,12 +1162,12 @@ class MainActivity : ComponentActivity() {
             }
         }
         var choosingFile by rememberSaveable { mutableStateOf(false) }
-        var confirmExternalRestore by rememberSaveable { mutableStateOf(false) }
         var savedRestore by rememberSaveable { mutableStateOf<String?>(null) }
         var deleteSource by rememberSaveable { mutableStateOf<String?>(null) }
         var shaSource by rememberSaveable { mutableStateOf<String?>(null) }
         var renameSource by rememberSaveable { mutableStateOf<String?>(null) }
         var renameName by rememberSaveable { mutableStateOf("") }
+        var importName by rememberSaveable { mutableStateOf("") }
         var exportSource by rememberSaveable { mutableStateOf<String?>(null) }
         var backupActions by rememberSaveable { mutableStateOf<String?>(null) }
         var showAppMenu by rememberSaveable { mutableStateOf(false) }
@@ -1220,11 +1220,11 @@ class MainActivity : ComponentActivity() {
                 override val isPinned: Boolean get() = !libraryOverflows
             }
         }
-        val restorePicker = rememberLauncherForActivityResult(
+        val importPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.OpenDocument(),
         ) { sourceUri ->
             choosingFile = false
-            if (sourceUri != null) model.selectRestoreFile(sourceUri)
+            if (sourceUri != null) model.selectImportFile(sourceUri)
         }
         val documentPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.CreateDocument("application/octet-stream"),
@@ -1255,29 +1255,63 @@ class MainActivity : ComponentActivity() {
                 BackupAction.DELETE -> deleteSource = entry.id
             }
         }
-        val pickerAvailable = !choosingFile && !confirmExternalRestore && savedRestore == null && deleteSource == null
+        val pickerAvailable = !choosingFile && !state.libraryLoading && savedRestore == null && deleteSource == null &&
+                state.selectedImport == null
         val editable = !state.busy && pickerAvailable
         val operationEligible = !state.busy && state.ready && batteryExempt && !state.libraryLoading
-        if (confirmExternalRestore || savedRestore != null) {
+        if (savedRestore != null) {
             val savedEntry = state.backups.find { it.id == savedRestore }
             RestoreConfirmationDialog(
-                backupName = if (savedRestore != null) savedEntry?.firmwareIdentity ?: "Firmware unknown"
-                    else state.selectedRestore?.name ?: "Selected backup",
+                backupName = savedEntry?.firmwareIdentity ?: "Firmware unknown",
                 backupDate = savedEntry?.let { backupDate(it.id) },
-                sha256 = if (savedRestore != null) savedEntry?.sha256 else state.selectedRestore?.sha256,
-                restoreEnabled = operationEligible && (!confirmExternalRestore || state.selectedRestore != null),
+                sha256 = savedEntry?.sha256,
+                restoreEnabled = operationEligible,
                 onConfirm = {
                     onButtonClick {
-                        val external = confirmExternalRestore
                         val saved = savedRestore
-                        confirmExternalRestore = false
                         savedRestore = null
                         if (saved != null) model.restoreSavedBackup(saved)
-                        else if (external) model.restoreSelectedFile()
                     }
                 },
                 onDismiss = {
-                    onButtonClick { confirmExternalRestore = false; savedRestore = null }
+                    onButtonClick { savedRestore = null }
+                },
+            )
+        }
+        LaunchedEffect(state.selectedImport?.sourceName) {
+            state.selectedImport?.sourceName?.let { importName = it.dropLast(4) }
+        }
+        state.selectedImport?.takeIf { !state.busy }?.let {
+            val valid = importName.isNotBlank() && importName.length <= BackupStore.MAX_NAME_LENGTH &&
+                    importName.all { character -> character.code in 32..126 }
+            AlertDialog(
+                onDismissRequest = { onButtonClick(model::cancelImport) },
+                title = { Text("Save imported backup") },
+                text = {
+                    OutlinedTextField(
+                        value = importName,
+                        onValueChange = { importName = it },
+                        label = { Text("File name") },
+                        trailingIcon = { Text(".bin") },
+                        singleLine = true,
+                        isError = !valid,
+                        supportingText = {
+                            Text("Required · printable ASCII, up to ${BackupStore.MAX_NAME_LENGTH} characters")
+                        },
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = valid && !state.busy,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        onClick = { onButtonClick { model.saveImportedBackup(importName) } },
+                    ) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { onButtonClick(model::cancelImport) },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("Cancel") }
                 },
             )
         }
@@ -1388,18 +1422,10 @@ class MainActivity : ComponentActivity() {
                     ExtendedFloatingActionButton(
                         onClick = { onButtonClick(model::backup) },
                         icon = {
-                            val color = MaterialTheme.colorScheme.onPrimaryContainer
-                            Canvas(Modifier.size(24.dp)) {
-                                val stroke = 2.dp.toPx()
-                                drawLine(
-                                    color, Offset(size.width / 2, 0f),
-                                    Offset(size.width / 2, size.height), stroke, StrokeCap.Round
-                                )
-                                drawLine(
-                                    color, Offset(0f, size.height / 2),
-                                    Offset(size.width, size.height / 2), stroke, StrokeCap.Round
-                                )
-                            }
+                            Icon(
+                                painter = painterResource(R.drawable.ic_save),
+                                contentDescription = null,
+                            )
                         },
                         text = { Text("Backup FM-1") },
                     )
@@ -1526,13 +1552,13 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
                                     DropdownMenuItem(
-                                        text = { Text("Restore from file") },
+                                        text = { Text("Import from file") },
                                         shape = MenuDefaults.leadingItemShape,
                                         enabled = editable && batteryExempt,
                                         onClick = {
                                             showAppMenu = false
                                             choosingFile = true
-                                            restorePicker.launch(
+                                            importPicker.launch(
                                                 arrayOf(
                                                     "application/octet-stream",
                                                     "application/x-binary",
@@ -1715,27 +1741,6 @@ class MainActivity : ComponentActivity() {
                         onDismissActions = { backupActions = null },
                         onAction = { action, selected -> handleBackupAction(action, selected) },
                     )
-                }
-                item {
-                    Column(
-                        modifier = Modifier.padding(top = 24.dp - ListItemDefaults.SegmentedGap),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        state.selectedRestore?.let { selected ->
-                            InfoBox {
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text(selected.name, style = MaterialTheme.typography.titleSmall)
-                                    InfoBoxDetail("1 MiB \u00b7 Validated.")
-                                }
-                            }
-                            Button(
-                                onClick = { onButtonClick { confirmExternalRestore = true } },
-                                enabled = operationEligible && pickerAvailable,
-                                shapes = ButtonDefaults.shapes(),
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                            ) { Text("Restore selected file") }
-                        }
-                    }
                 }
             }
         }

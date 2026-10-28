@@ -30,7 +30,6 @@ class RestoreDemoActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             var showPrompt by remember { mutableStateOf(true) }
-            var external by remember { mutableStateOf(false) }
             var result by remember { mutableStateOf("") }
             MaterialExpressiveTheme(colorScheme = fm1BlackColorScheme) {
                 Scaffold(
@@ -45,19 +44,15 @@ class RestoreDemoActivity : ComponentActivity() {
                         Text("The real restore dialog with sample backup details. No FM-1 data is read or written.")
                         if (result.isNotEmpty()) Text(result)
                         Button(
-                            onClick = { external = false; showPrompt = true },
+                            onClick = { showPrompt = true },
                             shapes = ButtonDefaults.shapes(),
                         ) { Text("Preview saved backup") }
-                        Button(
-                            onClick = { external = true; showPrompt = true },
-                            shapes = ButtonDefaults.shapes(),
-                        ) { Text("Preview restore from file") }
                         TextButton(onClick = ::finish) { Text("Exit preview") }
                     }
                     if (showPrompt) {
                         RestoreConfirmationDialog(
-                            backupName = if (external) "factory-backup.bin" else "FM-1 factory firmware (demo)",
-                            backupDate = if (external) null else "27 Oct 2026, 16:00",
+                            backupName = "FM-1 factory firmware (demo)",
+                            backupDate = "27 Oct 2026, 16:00",
                             sha256 = "bc5d2317a8e09f624d1c73ab906fe812c49a0bd6753e18f29a647cd0285b93ef",
                             restoreEnabled = true,
                             onConfirm = {

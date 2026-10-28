@@ -60,7 +60,7 @@ enum class TransferOutcome {
     CANCELLED,
 }
 
-data class SelectedRestore(val name: String, val sha256: String)
+data class SelectedImport(val sourceName: String, val sha256: String)
 
 internal fun String.withTerminalPeriod(): String = when {
     isBlank() || endsWith(".") || endsWith("...") || endsWith("\u2026") -> this
@@ -185,7 +185,7 @@ data class BackupState(
     val progress: Float = 0f,
     val transfer: FlashOperation? = null,
     val progressKnown: Boolean = false,
-    val selectedRestore: SelectedRestore? = null,
+    val selectedImport: SelectedImport? = null,
     val restoreRetryAvailable: Boolean = false,
     val hash: String = "",
     val hashLabel: String = "SHA-256",
@@ -232,8 +232,8 @@ class BackupModel(
 
     /** Main-thread cancellation flag checked by the worker between bounded I/O commands. */
     private val cancelled = AtomicBoolean()
-
     private var userDisconnectedDeviceName: String? = null
+
     /** Worker-owned session handles, cleared together so a failed session cannot be reused. */
     private var transport: BotTransport? = null
 
@@ -251,7 +251,7 @@ class BackupModel(
     private var pendingPermission: String? = null
     private val backupStore by lazy { BackupStore(File(application.filesDir, "backups")) }
     private val backupPreferences by lazy { application.getSharedPreferences("backup_library", Context.MODE_PRIVATE) }
-    private var selectedRestoreBytes: ByteArray? = null
+    private var selectedImportBytes: ByteArray? = null
     private var retryRestoreSource: (() -> InputStream)? = null
     private var firmwareDeviceName: String? = null
     private var firmwareMidiId: Int? = null
@@ -997,58 +997,35 @@ class BackupModel(
         }
     }
 
-    /**
-     * Restores only after the UI's destructive confirmation. The selected document is read-only;
-     * private staging is bounded, hashed and snapshot before any flash erase can be issued.
-     */
-    fun selectRestoreFile(uri: Uri) {
-        if (!batterySetupApproved()) return
-        if (state.busy) return
+    /** Validates an external image before asking for the name of its private library copy. */
+    fun selectImportFile(uri: Uri) {
+        if (state.busy || state.libraryLoading) return
         cancelled.set(false)
-        state = state.copy(
-            busy = true, selectedRestore = null,
-            status = statusMessage("Validating restore file", "Checking the selected file")
-        )
+        state = state.copy(busy = true, selectedImport = null)
         worker.execute {
-            selectedRestoreBytes = null
+            selectedImportBytes = null
             try {
                 val resolver = application.contentResolver
                 val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                    if (!cursor.moveToFirst()) throw ProtocolException("Could not read restore filename")
+                    if (!cursor.moveToFirst()) throw ProtocolException("Could not read import filename")
                     cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
-                } ?: throw ProtocolException("Could not read restore filename")
+                } ?: throw ProtocolException("Could not read import filename")
                 RestoreImage.requireBinaryName(name)
                 val output = ByteArrayOutputStream(FlashRestore.FLASH_SIZE)
                 val hash = resolver.openInputStream(uri)?.use { input ->
                     RestoreImage.stage(input, output, ::checkCancelled)
-                } ?: throw ProtocolException("Could not open restore source")
-                val snapshot = output.toByteArray().inputStream().use { input ->
-                    RestoreImage.snapshot(input, hash, ::checkCancelled)
-                }
-                selectedRestoreBytes = snapshot
-                post { current ->
-                    current.copy(
-                        busy = false,
-                        selectedRestore = SelectedRestore(name, hash),
-                        status = if (current.ready) {
-                            statusMessage("Restore file validated", "The backup file is valid and ready to restore")
-                        } else {
-                            statusMessage(
-                                "Restore file validated",
-                                "Connect the FM-1 before restoring this valid backup"
-                            )
-                        },
-                    )
-                }
+                } ?: throw ProtocolException("Could not open import source")
+                selectedImportBytes = output.toByteArray()
+                post { it.copy(busy = false, selectedImport = SelectedImport(name, hash)) }
             } catch (failure: Exception) {
-                selectedRestoreBytes = null
+                selectedImportBytes = null
                 post {
                     it.copy(
-                        busy = false, selectedRestore = null,
+                        busy = false, selectedImport = null,
                         status = if (failure is CancellationException) {
-                            statusMessage("Restore file validation cancelled", "No flash changes were made")
+                            statusMessage("Import validation cancelled", "No backup was added")
                         } else {
-                            statusMessage("Restore file rejected", failure.message ?: "Choose a raw .bin backup file")
+                            statusMessage("Import file rejected", failure.message ?: "Choose a raw .bin backup file")
                         }
                     )
                 }
@@ -1056,20 +1033,67 @@ class BackupModel(
         }
     }
 
-    fun restoreSelectedFile() {
-        if (!batterySetupApproved()) return
-        if (state.selectedRestore == null) {
+    fun cancelImport() {
+        if (state.busy || state.selectedImport == null) return
+        selectedImportBytes = null
+        state = state.copy(selectedImport = null)
+    }
+
+    fun saveImportedBackup(name: String) {
+        val selected = state.selectedImport ?: return
+        if (state.busy || state.libraryLoading) return
+        val identity = name.trim()
+        if (identity.isEmpty() || identity.length > BackupStore.MAX_NAME_LENGTH ||
+            identity.any { it.code !in 32..126 }
+        ) {
             state = state.copy(
-                status = statusMessage(
-                    "Restore file required", "Select and validate a raw .bin backup before restoring"
-                )
+                status = statusMessage("File name required", "Enter a printable ASCII name of up to ${BackupStore.MAX_NAME_LENGTH} characters")
             )
             return
         }
-        restoreSource(openSource = {
-            selectedRestoreBytes?.inputStream()
-                ?: throw ProtocolException("Selected restore image is no longer available; select it again")
-        })
+        state = state.copy(
+            busy = true,
+            status = statusMessage("Saving imported backup", "Adding the verified file to this app's backup library"),
+        )
+        worker.execute {
+            var pending: File? = null
+            try {
+                val image = selectedImportBytes
+                    ?: throw ProtocolException("Validated import is no longer available; select the file again")
+                val file = backupStore.createPending()
+                pending = file
+                BufferedOutputStream(file.outputStream(), 65536).use { it.write(image) }
+                val entry = backupStore.publish(file, selected.sha256, identity)
+                pending = null
+                selectedImportBytes = null
+                post { current ->
+                    current.copy(
+                        busy = false,
+                        selectedImport = null,
+                        backups = (current.backups + entry)
+                            .sortedWith(compareByDescending<BackupEntry> { it.createdAt }.thenByDescending { it.id }),
+                        status = statusMessage("Backup imported", "The verified file was added to this app's backup library"),
+                    )
+                }
+            } catch (failure: Exception) {
+                val deleted = try {
+                    pending?.let(backupStore::discard) ?: true
+                } catch (cleanupFailure: Exception) {
+                    Log.w("BackupModel", "Could not remove incomplete imported backup", cleanupFailure)
+                    false
+                }
+                val cleanupMessage = if (deleted) "" else " An incomplete private file could not be removed."
+                post {
+                    it.copy(
+                        busy = false,
+                        status = statusMessage(
+                            "Import failed",
+                            "${failure.message ?: "Could not save the verified backup"}.$cleanupMessage",
+                        ),
+                    )
+                }
+            }
+        }
     }
 
     fun restoreSavedBackup(id: String) {
@@ -1139,12 +1163,11 @@ class BackupModel(
                 } catch (closeFailure: Exception) {
                     Log.w("BackupModel", "Could not close session after reboot", closeFailure)
                 }
-                selectedRestoreBytes = null
                 result = { currentState ->
                     retryRestoreSource = null
                     currentState.copy(
                         busy = false, ready = false, progress = 1f, hash = "",
-                        selectedRestore = null, restoreRetryAvailable = false,
+                        restoreRetryAvailable = false,
                         status = statusMessage(
                             "Restore successful",
                             "Rebooting into restored firmware",
@@ -1381,7 +1404,7 @@ class BackupModel(
     }
 
     private companion object {
-        const val PINNED_BACKUP_IDS = "pinned_backup_ids"
+            const val PINNED_BACKUP_IDS = "pinned_backup_ids"
         const val KEEPALIVE_INTERVAL_MS = 1000L
         const val DISCOVERY_TIMEOUT_MS = 3000L
     }

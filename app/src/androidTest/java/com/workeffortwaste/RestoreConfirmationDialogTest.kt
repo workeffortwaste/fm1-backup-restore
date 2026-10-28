@@ -2,7 +2,6 @@ package com.workeffortwaste
 
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -41,15 +40,4 @@ class RestoreConfirmationDialogTest {
         }
     }
 
-    @Test fun externalBackupKeepsRestoreDisabledUntilEligible() {
-        compose.setContent {
-            MaterialExpressiveTheme {
-                RestoreConfirmationDialog("factory-backup.bin", null, hash, false, {}, {})
-            }
-        }
-        compose.onNodeWithText("factory-backup.bin").assertIsDisplayed()
-        compose.onNodeWithText(hash).assertIsDisplayed()
-        compose.onNodeWithText("Yes, restore").assertIsNotEnabled()
-        compose.onNodeWithText("No, go back").performClick()
-    }
 }

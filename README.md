@@ -65,7 +65,7 @@ The app reads the full 1 MiB flash twice and checks the saved copy before adding
 
 ### Restoring
 
-Choose **Restore** from a saved backup's menu, or **Restore from file** in the top menu to use an pre-existing  `.bin` backup.
+Choose **Restore** from a saved backup's menu, or **Import from file** in the top menu to add a verified `.bin` backup to your library. The imported backup is not restored automatically.
 
 Read the confirmation carefully: restoring replaces the FM-1's firmware, settings and patches (everything) outside the protected bootloader region.
 

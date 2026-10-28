@@ -22,9 +22,9 @@ import org.junit.Rule
 import org.junit.Test
 import java.security.MessageDigest
 
-/** Exercises Android document selection, restore-image validation, and discovery eligibility without writing to USB. */
+/** Exercises external backup validation and import without connecting to or writing to USB. */
 @SdkSuppress(minSdkVersion = 29)
-class ExternalRestoreTest {
+class ImportBackupTest {
     @get:Rule
     val compose = createComposeRule()
     private val application =
@@ -68,7 +68,7 @@ class ExternalRestoreTest {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/FM-1-restore-tests")
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/FM-1-import-tests")
         }
         val uri = requireNotNull(resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values))
         documents += uri
@@ -77,8 +77,79 @@ class ExternalRestoreTest {
     }
 
     private fun select(uri: Uri) {
-        compose.runOnIdle { model.selectRestoreFile(uri) }
+        compose.runOnIdle { model.selectImportFile(uri) }
         compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
+    }
+
+    @Test
+    fun importsVerifiedImageWithoutDeviceOrBatteryApproval() {
+        val bytes = ByteArray(FlashRestore.FLASH_SIZE) { (it * 17).toByte() }
+        setBatteryExemption(false)
+        val originalStatus = model.state.status
+        select(document("fm-1-20000101-000000.bin", bytes))
+        val selected = model.state.selectedImport
+        assertNotNull(selected)
+        assertEquals("fm-1-20000101-000000.bin", selected?.sourceName)
+        assertEquals(
+            RestoreImage.hex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+            selected?.sha256,
+        )
+        assertEquals(originalStatus, model.state.status)
+        assertFalse(model.state.ready)
+        assertFalse(model.state.showTransferProgress)
+        assertEquals(0, starts)
+
+        compose.runOnIdle { model.saveImportedBackup("") }
+        assertNotNull(model.state.selectedImport)
+        assertEquals("File name required", model.state.status.heading)
+
+        val importName = "Imported-${System.currentTimeMillis()}"
+        val importStartedAt = System.currentTimeMillis()
+        compose.runOnIdle { model.saveImportedBackup(importName) }
+        compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
+        val importCompletedAt = System.currentTimeMillis()
+        val imported = model.state.backups.singleOrNull { it.firmwareIdentity == importName }
+        assertNotNull(imported)
+        assertTrue(
+            "The library date should come from when the file is imported, not its filename",
+            requireNotNull(imported).createdAt in importStartedAt..importCompletedAt,
+        )
+        assertEquals(0, starts)
+        assertNull(model.state.selectedImport)
+        assertEquals("Backup imported", model.state.status.heading)
+        compose.runOnIdle { model.deleteBackup(requireNotNull(imported).id) }
+        compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
+    }
+
+    @Test
+    fun rejectsWrongSizeAndClearsPreviouslyValidatedSelection() {
+        select(document("fm-1-good.bin", ByteArray(FlashRestore.FLASH_SIZE)))
+        assertNotNull(model.state.selectedImport)
+        for (size in listOf(0, FlashRestore.FLASH_SIZE - 1, FlashRestore.FLASH_SIZE + 1)) {
+            select(document("fm-1-invalid-$size.bin", ByteArray(size)))
+            assertNull(model.state.selectedImport)
+            assertTrue(model.state.status.isNotEmpty)
+            assertEquals(0, starts)
+        }
+    }
+
+    @Test
+    fun rejectsNonBinaryFileEvenIfItsLengthMatches() {
+        select(document("fm-1-not-binary.dat", ByteArray(FlashRestore.FLASH_SIZE)))
+        assertNull(model.state.selectedImport)
+        assertEquals("Import file rejected", model.state.status.heading)
+        assertEquals(0, starts)
+    }
+
+    @Test
+    fun inaccessibleDocumentIsReportedWithoutStartingTransfer() {
+        val uri = document("fm-1-deleted.bin", ByteArray(FlashRestore.FLASH_SIZE))
+        resolver.delete(uri, null, null)
+        documents.remove(uri)
+        select(uri)
+        assertNull(model.state.selectedImport)
+        assertEquals("Import file rejected", model.state.status.heading)
+        assertEquals(0, starts)
     }
 
     @Test
@@ -104,80 +175,5 @@ class ExternalRestoreTest {
         } finally {
             preferences.edit().putBoolean("complete", originallyComplete).apply()
         }
-    }
-
-    @Test
-    fun validatesExternalBinaryWithoutDeviceOrStartingTransfer() {
-        val bytes = ByteArray(FlashRestore.FLASH_SIZE) { (it * 17).toByte() }
-        val uri = document("fm-1-valid.bin", bytes)
-        select(uri)
-        val selected = model.state.selectedRestore
-        assertNotNull(selected)
-        assertEquals("fm-1-valid.bin", selected?.name)
-        assertEquals(RestoreImage.hex(MessageDigest.getInstance("SHA-256").digest(bytes)), selected?.sha256)
-        assertFalse(model.state.ready)
-        assertFalse(model.state.showTransferProgress)
-        assertEquals(0, starts)
-        compose.runOnIdle { model.restoreSelectedFile() }
-        assertEquals(0, starts)
-        assertFalse(model.state.busy)
-    }
-
-    @Test
-    fun rejectsWrongSizeAndClearsPreviouslyValidatedSelection() {
-        select(document("fm-1-good.bin", ByteArray(FlashRestore.FLASH_SIZE)))
-        assertNotNull(model.state.selectedRestore)
-        for (size in listOf(0, FlashRestore.FLASH_SIZE - 1, FlashRestore.FLASH_SIZE + 1)) {
-            select(document("fm-1-invalid-$size.bin", ByteArray(size)))
-            assertNull(model.state.selectedRestore)
-            assertTrue(model.state.status.isNotEmpty)
-            assertEquals(0, starts)
-        }
-    }
-
-    @Test
-    fun rejectsNonBinaryFileEvenIfItsLengthMatches() {
-        select(document("fm-1-not-binary.dat", ByteArray(FlashRestore.FLASH_SIZE)))
-        assertNull(model.state.selectedRestore)
-        assertTrue(model.state.status.isNotEmpty)
-        assertEquals(0, starts)
-    }
-
-    @Test
-    fun inaccessibleDocumentIsReportedWithoutStartingTransfer() {
-        val uri = document("fm-1-deleted.bin", ByteArray(FlashRestore.FLASH_SIZE))
-        resolver.delete(uri, null, null)
-        documents.remove(uri)
-        select(uri)
-        assertNull(model.state.selectedRestore)
-        assertEquals("Restore file rejected", model.state.status.heading)
-        assertEquals(0, starts)
-    }
-
-    @Test
-    fun missingBatteryExemptionBlocksEveryBackupAndRestoreEntryPoint() {
-        val uri = document("fm-1-battery-gated.bin", ByteArray(FlashRestore.FLASH_SIZE))
-        setBatteryExemption(false)
-        val actions: List<() -> Unit> = listOf(
-            { model.backup() },
-            { model.selectRestoreFile(uri) },
-            { model.restoreSelectedFile() },
-            { model.restoreSavedBackup("not-selected") },
-        )
-        for (action in actions) {
-            compose.runOnIdle { action() }
-            assertFalse(model.state.busy)
-            assertNull(model.state.selectedRestore)
-            assertTrue(model.state.status.heading.contains("Backup and restore are blocked"))
-            assertEquals(0, starts)
-        }
-        setBatteryExemption(true)
-        select(uri)
-        assertNotNull(model.state.selectedRestore)
-        setBatteryExemption(false)
-        compose.runOnIdle { model.restoreSelectedFile() }
-        assertTrue(model.state.status.heading.contains("Backup and restore are blocked"))
-        assertFalse(model.state.busy)
-        assertEquals(0, starts)
     }
 }
