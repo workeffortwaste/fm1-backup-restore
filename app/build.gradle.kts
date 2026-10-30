@@ -11,6 +11,8 @@ val releaseKeystore = providers.environmentVariable("ANDROID_RELEASE_KEYSTORE").
 val releaseKeystorePassword = providers.environmentVariable("ANDROID_RELEASE_KEYSTORE_PASSWORD").orNull
 val releaseKeyAlias = providers.environmentVariable("ANDROID_RELEASE_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("ANDROID_RELEASE_KEY_PASSWORD").orNull
+val baseApplicationId = "com.workeffortwaste"
+val debugApplicationId = "$baseApplicationId.debug"
 val releaseSigningConfigured = listOf(
     releaseKeystore,
     releaseKeystorePassword,
@@ -31,13 +33,19 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.workeffortwaste"
+        applicationId = baseApplicationId
         // Android 8+ USB Host/MIDI support; newer receiver and theme APIs are guarded at runtime.
         minSdk = 26
         targetSdk = 37
         versionCode = releaseVersionCode
         versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
     }
     buildFeatures {
         compose = true
@@ -56,7 +64,9 @@ android {
                 keyPassword = requireNotNull(releaseKeyPassword)
             }
         }
-        buildTypes {
+    }
+    buildTypes {
+        if (releaseSigningConfigured) {
             getByName("release") {
                 signingConfig = signingConfigs.getByName("release")
             }
@@ -98,7 +108,7 @@ val captureThemeScreenshots = tasks.register<Exec>("captureThemeScreenshots") {
     commandLine(
         adb, "shell", "am", "instrument", "-w", "-e", "class",
         "com.workeffortwaste.ScreenshotCapture",
-        "com.workeffortwaste.test/androidx.test.runner.AndroidJUnitRunner",
+        "$debugApplicationId.test/androidx.test.runner.AndroidJUnitRunner",
     )
 }
 
@@ -110,6 +120,6 @@ tasks.register<Exec>("screenshotThemes") {
     commandLine(
         "sh", "-c",
         "rm -rf '$outputPath' && mkdir -p '$outputPath' && " +
-            "'$adb' pull /sdcard/Android/data/com.workeffortwaste/files/theme-screenshots/. '$outputPath'",
+            "'$adb' pull /sdcard/Android/data/$debugApplicationId/files/theme-screenshots/. '$outputPath'",
     )
 }
