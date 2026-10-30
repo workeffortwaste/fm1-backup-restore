@@ -653,7 +653,7 @@ class BackupModel(
                     }
                 }
                 postV15Recovery {
-                    it.copy(progress = null, phase = "Verifying package and building recovery image")
+                    it.copy(progress = null, phase = "Verifying package and building recovery snapshot")
                 }
                 val image = V15RecoveryImage.build(packageBytes)
                 postV15Recovery { it.copy(phase = "Verifying and saving recovery backup") }

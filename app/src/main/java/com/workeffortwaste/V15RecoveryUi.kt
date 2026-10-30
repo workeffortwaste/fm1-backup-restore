@@ -34,7 +34,7 @@ internal fun V15RecoveryDialog(
                 Text("Didn't manage to take a backup of your device before you started flashing custom firmware?")
                 Text(
                     "Downloads and verifies the official v15 firmware update directly from M-Vave, " +
-                            "reconstructs a stock v15 image, and adds FM-1_015 RECOVERY to your library.",
+                            "reconstructs a stock v15 snapshot, and adds FM-1_015 RECOVERY to your library.",
                 )
                 if (state.working) {
                     Text(state.phase, style = MaterialTheme.typography.titleSmall)

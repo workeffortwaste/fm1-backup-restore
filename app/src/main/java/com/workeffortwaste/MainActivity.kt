@@ -1601,7 +1601,7 @@ class MainActivity : ComponentActivity() {
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Create recovery image") },
+                                        text = { Text("Create recovery snapshot") },
                                         shape = MenuDefaults.middleItemShape,
                                         enabled = editable && batteryExempt,
                                         onClick = {
