@@ -1759,9 +1759,20 @@ class MainActivity : ComponentActivity() {
                             if (state.libraryError.isNotEmpty()) Text(state.libraryError)
                             if (!state.libraryLoading && state.libraryError.isEmpty() && state.backups.isEmpty()) {
                                 InfoBox {
-                                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Text("No current backups", style = MaterialTheme.typography.titleSmall)
-                                        InfoBoxDetail("Connect your FM-1 and create your first full flash backup.")
+                                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Text(
+                                                "Already started flashing custom firmware?",
+                                                style = MaterialTheme.typography.titleSmall,
+                                            )
+                                            InfoBoxDetail("Generate a stock v15 snapshot even if you didn't save a backup first.")
+                                        }
+                                        Button(
+                                            onClick = { onButtonClick(model::showV15RecoveryDialog) },
+                                            enabled = editable,
+                                            shapes = ButtonDefaults.shapes(),
+                                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                        ) { Text("Create v15 recovery snapshot") }
                                     }
                                 }
                             }

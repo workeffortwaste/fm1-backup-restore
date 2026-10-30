@@ -61,6 +61,24 @@ class DeleteBackupDialogTest {
         checkDialog(null, "Firmware unknown", delete = true)
     }
 
+    @Test fun emptyLibraryOffersSnapshotAndOpensExistingModal() {
+        assertTrue(BackupStore(File(context.filesDir, "backups")).list().isEmpty())
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            compose.waitUntil(timeoutMillis = 10000) {
+                compose.onAllNodes(hasText("Already started flashing custom firmware?"))
+                    .fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithText("Generate a stock v15 snapshot even if you didn't save a backup first.")
+                .assertIsDisplayed()
+            compose.onNodeWithText("Create v15 recovery snapshot").performClick()
+            compose.onNode(hasText("Create v15 recovery snapshot") and hasAnyAncestor(isDialog()))
+                .assertIsDisplayed()
+            compose.onNodeWithText("Download and build").assertIsDisplayed()
+            compose.onNodeWithText("Cancel").performClick()
+            compose.onNodeWithText("Download and build").assertDoesNotExist()
+        }
+    }
+
     @Test fun mainMenuOpensFirmwareExportModalAndCancelPreservesLibrary() {
         val name = "Export modal test"
         createBackup(name)
@@ -87,17 +105,19 @@ class DeleteBackupDialogTest {
                 compose.onAllNodes(hasText(name)).fetchSemanticsNodes().isNotEmpty()
             }
             compose.onNodeWithText("Backups").assertIsDisplayed()
+            compose.onNodeWithText("Already started flashing custom firmware?").assertDoesNotExist()
             compose.onNodeWithText(name).performClick()
             compose.onNodeWithText("Pin", useUnmergedTree = true).performClick()
             compose.onNodeWithText("Pinned").assertIsDisplayed()
             compose.onNodeWithText(name).assertIsDisplayed()
             compose.onNodeWithText("Backups").assertDoesNotExist()
-            compose.onNodeWithText("No current backups").assertDoesNotExist()
+            compose.onNodeWithText("Already started flashing custom firmware?").assertDoesNotExist()
             compose.onNodeWithText(name).performClick()
             compose.onNodeWithText("Unpin", useUnmergedTree = true).performClick()
             compose.onNodeWithText("Backups").assertIsDisplayed()
             compose.onNodeWithText(name).assertIsDisplayed()
             compose.onNodeWithText("Pinned").assertDoesNotExist()
+            compose.onNodeWithText("Already started flashing custom firmware?").assertDoesNotExist()
         }
     }
 
