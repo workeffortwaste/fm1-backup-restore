@@ -6,6 +6,19 @@ internal const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 internal fun updateCheckDue(now: Long, lastCheck: Long): Boolean =
     lastCheck <= 0 || lastCheck > now || now - lastCheck >= UPDATE_CHECK_INTERVAL_MS
 
+/**
+ * Explains why this install can never receive a release update, or null if checks are allowed.
+ * Debuggable installs use a different application ID, signing key and version suffix, so a signed
+ * release APK could never pass installation checks; the GitHub request is skipped entirely.
+ */
+internal fun updatesUnavailableReason(debuggable: Boolean, versionName: String): String? = when {
+    debuggable -> "This is a debug build, so it doesn't check for or install updates. " +
+        "Install the release APK from GitHub to receive updates."
+    runCatching { ReleaseVersion.parse(versionName) }.isFailure ->
+        "This build's version ($versionName) isn't a release version, so updates can't be checked."
+    else -> null
+}
+
 /** Updates wait until discovery and any active device operation are finished. */
 internal val BackupState.canInstallAppUpdate: Boolean
     get() = !busy && !findingBootloader && !autoConnectPending

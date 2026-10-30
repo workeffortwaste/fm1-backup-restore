@@ -1,6 +1,7 @@
 package com.workeffortwaste
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -42,5 +43,24 @@ class UpdatePolicyTest {
         assertTrue(updateCheckDue(10_000, 0))
         assertTrue(updateCheckDue(10_000, -1))
         assertTrue(updateCheckDue(10_000, 20_000))
+    }
+
+    @Test fun releaseInstallsCanCheckForUpdates() {
+        assertNull(updatesUnavailableReason(debuggable = false, versionName = "0.9"))
+        assertNull(updatesUnavailableReason(debuggable = false, versionName = "1.2.3"))
+    }
+
+    @Test fun debuggableInstallsNeverCheckRegardlessOfVersion() {
+        for (version in listOf("0.9", "0.9-debug", "0.0.0-debug", "")) {
+            val reason = updatesUnavailableReason(debuggable = true, versionName = version)
+            assertTrue(version, reason != null && reason.contains("debug build"))
+        }
+    }
+
+    @Test fun nonReleaseVersionNamesExplainWhyChecksAreSkipped() {
+        for (version in listOf("0.9-debug", "1.0-beta", "")) {
+            val reason = updatesUnavailableReason(debuggable = false, versionName = version)
+            assertTrue(version, reason != null && reason.contains("isn't a release version"))
+        }
     }
 }

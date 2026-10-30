@@ -24,33 +24,43 @@ internal fun UpdateSettings(updater: AppUpdateModel, deviceIdle: Boolean) {
     val state = updater.state
     InfoBox(iconResource = R.drawable.ic_refresh) {
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            InfoBoxDetail(
-                "FM-1 Backup & Restore automatically checks for updates on launch once a day. Check manually below.",
-            )
-            if (state.message.isNotEmpty()) InfoBoxDetail(state.message)
-            if (state.release != null) {
-                TextButton(
-                    onClick = updater::show,
-                    enabled = deviceIdle && !state.checking && !updater.installerOpen,
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) { Text("View update ${state.release.version}") }
-            }
-            if (!deviceIdle) InfoBoxDetail("Updates can be installed after the FM-1 operation finishes.")
-            Button(
-                onClick = { updater.check(manual = true) },
-                enabled = deviceIdle && !state.checking && !state.downloading && !updater.installerOpen,
-                shapes = ButtonDefaults.shapes(),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-            ) {
-                Text(
-                    when {
-                        state.checking -> "Checking for updates..."
-                        state.downloading -> "Downloading update: ${state.progress}%"
-                        else -> "Check for updates"
-                    },
-                )
+            val unavailableReason = updater.unavailableReason
+            if (unavailableReason != null) {
+                InfoBoxDetail(unavailableReason)
+            } else {
+                UpdateControls(updater, state, deviceIdle)
             }
         }
+    }
+}
+
+@Composable
+private fun UpdateControls(updater: AppUpdateModel, state: AppUpdateState, deviceIdle: Boolean) {
+    InfoBoxDetail(
+        "FM-1 Backup & Restore automatically checks for updates on launch once a day. Check manually below.",
+    )
+    if (state.message.isNotEmpty()) InfoBoxDetail(state.message)
+    if (state.release != null) {
+        TextButton(
+            onClick = updater::show,
+            enabled = deviceIdle && !state.checking && !updater.installerOpen,
+            modifier = Modifier.heightIn(min = 48.dp),
+        ) { Text("View update ${state.release.version}") }
+    }
+    if (!deviceIdle) InfoBoxDetail("Updates can be installed after the FM-1 operation finishes.")
+    Button(
+        onClick = { updater.check(manual = true) },
+        enabled = deviceIdle && !state.checking && !state.downloading && !updater.installerOpen,
+        shapes = ButtonDefaults.shapes(),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+    ) {
+        Text(
+            when {
+                state.checking -> "Checking for updates..."
+                state.downloading -> "Downloading update: ${state.progress}%"
+                else -> "Check for updates"
+            },
+        )
     }
 }
 

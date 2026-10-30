@@ -2,6 +2,7 @@ package com.workeffortwaste
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
@@ -104,7 +105,14 @@ internal class AppUpdateModel(application: Application) : AndroidViewModel(appli
     private val installed: PackageInfo
         get() = packageInfo(null)
 
+    /** Non-null for debug or non-release installs; every check is skipped without touching the network. */
+    val unavailableReason: String? = updatesUnavailableReason(
+        debuggable = application.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0,
+        versionName = installed.versionName.orEmpty(),
+    )
+
     fun check(manual: Boolean) {
+        if (unavailableReason != null) return
         if (state.checking || state.downloading || installerOpen) return
         val now = System.currentTimeMillis()
         if (!manual && !updateCheckDue(now, preferences.getLong("last_check", 0))) return
