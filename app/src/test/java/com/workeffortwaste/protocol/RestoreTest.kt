@@ -148,13 +148,14 @@ class RestoreTest {
             }
         }
         val reads = device.commands.filter { it.code == 0xfd05 }
-        assertEquals(8064, reads.size)
-        assertEquals(0x4000, reads.first().address)
-        assertEquals(0xfff00, reads[4031].address)
-        assertEquals(0x4000, reads[4032].address)
-        assertEquals(0xfff00, reads.last().address)
+        // Every writable sector differs on its first page, so comparison costs one read per sector.
+        val compareReads = reads.take(252)
+        val verifyReads = reads.drop(252)
+        assertEquals(252 + 4032, reads.size)
+        assertEquals((0x4000 until 0x100000 step FlashRestore.SECTOR_SIZE).toList(), compareReads.map { it.address })
+        assertEquals((0x4000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(), verifyReads.map { it.address })
         val firstEraseIndex = device.commands.indexOfFirst { it.code == 0xfb01 }
-        assertTrue(device.commands.take(firstEraseIndex).count { it.code == 0xfd05 } >= 16)
+        assertEquals(1, device.commands.take(firstEraseIndex).count { it.code == 0xfd05 })
     }
 
     @Test
@@ -177,11 +178,91 @@ class RestoreTest {
             device.memory.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
         )
         val reads = device.commands.filter { it.code == 0xfd05 }
-        assertEquals(8064, reads.size)
+        // Two matching sectors are fully compared (16 pages); the other 250 stop at their first page.
+        val compareReadCount = 2 * 16 + 250
+        assertEquals(compareReadCount + 4032, reads.size)
+        val compareReads = reads.take(compareReadCount)
+        assertEquals((0x4000 until 0x5000 step FlashRestore.PAGE_SIZE).toList(),
+            compareReads.filter { it.address in 0x4000 until 0x5000 }.map { it.address })
+        assertEquals((0xff000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(),
+            compareReads.filter { it.address in 0xff000 until 0x100000 }.map { it.address })
+        assertEquals((0x5000 until 0xff000 step FlashRestore.SECTOR_SIZE).toList(),
+            compareReads.filter { it.address in 0x5000 until 0xff000 }.map { it.address })
         assertEquals((0x4000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(),
-            reads.take(4032).map { it.address })
-        assertEquals((0x4000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(),
-            reads.drop(4032).map { it.address })
+            reads.drop(compareReadCount).map { it.address })
+    }
+
+    @Test
+    fun comparisonStopsAtFirstDifferingPageOfASector() {
+        val source = image
+        val device = MemoryScsi(source)
+        // Sector 0x5000: pages 0-4 already match, page 5 differs, pages 6-15 match.
+        source.copyInto(device.memory, 0x5000, 0x5000, 0x6000)
+        device.memory[0x5500] = (device.memory[0x5500].toInt() xor 1).toByte()
+
+        restore(device, source)
+
+        val firstErase = device.commands.indexOfFirst { it.code == 0xfb01 && it.address == 0x5000 }
+        assertTrue(firstErase > 0)
+        val sectorCompareReads = device.commands.take(firstErase)
+            .filter { it.code == 0xfd05 && it.address in 0x5000 until 0x6000 }
+        assertEquals((0x5000..0x5500 step FlashRestore.PAGE_SIZE).toList(), sectorCompareReads.map { it.address })
+        assertEquals(16, device.mutations.count { it.code == 0xfb04 && it.address in 0x5000 until 0x6000 })
+        assertArrayEquals(
+            source.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
+            device.memory.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
+        )
+    }
+
+    @Test
+    fun pagesLeftErasedByTheImageAreNotWrittenButAreStillVerified() {
+        val source = image
+        // Sector 0x6000: pages 3 and 9 are blank; sector 0x7000 is entirely blank.
+        source.fill(-1, 0x6300, 0x6400)
+        source.fill(-1, 0x6900, 0x6a00)
+        source.fill(-1, 0x7000, 0x8000)
+        val device = MemoryScsi(source)
+
+        val hash = restore(device, source)
+
+        assertEquals(1, device.mutations.count { it.code == 0xfb01 && it.address == 0x6000 })
+        assertEquals(
+            (0x6000 until 0x7000 step FlashRestore.PAGE_SIZE).filter { it != 0x6300 && it != 0x6900 },
+            device.mutations.filter { it.code == 0xfb04 && it.address in 0x6000 until 0x7000 }.map { it.address },
+        )
+        assertEquals(1, device.mutations.count { it.code == 0xfb01 && it.address == 0x7000 })
+        assertTrue(device.mutations.none { it.code == 0xfb04 && it.address in 0x7000 until 0x8000 })
+        // Verification still reads back every skipped page.
+        val verifyReads = device.commands.filter { it.code == 0xfd05 }.takeLast(4032).map { it.address }
+        assertEquals((0x4000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(), verifyReads)
+        assertArrayEquals(
+            source.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
+            device.memory.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
+        )
+        assertEquals(
+            RestoreImage.hex(
+                MessageDigest.getInstance("SHA-256").digest(
+                    source.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE)
+                )
+            ), hash
+        )
+    }
+
+    @Test
+    fun blankPageIsStillRewrittenWhenDeviceHoldsStaleData() {
+        val source = image
+        source.fill(-1, 0x6300, 0x6400)
+        val device = MemoryScsi(source)
+        // Device already matches the image except for stale data in the blank page.
+        source.copyInto(device.memory, FlashRestore.PROTECTED_SIZE, FlashRestore.PROTECTED_SIZE)
+        device.memory[0x6310] = 0x12
+
+        restore(device, source)
+
+        assertEquals(1, device.mutations.count { it.code == 0xfb01 && it.address == 0x6000 })
+        assertTrue(device.mutations.none { it.code == 0xfb04 && it.address == 0x6300 })
+        assertEquals(15, device.mutations.count { it.code == 0xfb04 && it.address in 0x6000 until 0x7000 })
+        assertEquals(-1, device.memory[0x6310].toInt())
     }
 
     @Test
@@ -384,7 +465,7 @@ class RestoreTest {
                 corruptOnce = false
             }
         }
-        val failure = assertThrows(ProtocolException::class.java) { restore(device) }
+        val failure = assertThrows(RestoreVerificationException::class.java) { restore(device) }
         assertTrue(failure.message!!.contains("readback mismatch"))
         assertEquals(0xfff00, device.commands.last().address)
         restore(device)

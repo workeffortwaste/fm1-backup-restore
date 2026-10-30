@@ -26,6 +26,7 @@ import com.workeffortwaste.protocol.FlashInfo
 import com.workeffortwaste.protocol.FlashRestore
 import com.workeffortwaste.protocol.ProtocolException
 import com.workeffortwaste.protocol.RestoreImage
+import com.workeffortwaste.protocol.RestoreVerificationException
 import com.workeffortwaste.protocol.V15RecoveryImage
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -1325,8 +1326,7 @@ class BackupModel(
                 outcome = TransferOutcome.SUCCESS
             } catch (failure: Exception) {
                 outcome = if (failure is CancellationException) TransferOutcome.CANCELLED else TransferOutcome.FAILURE
-                val retryableVerificationFailure = mutationStarted && failure is ProtocolException &&
-                        failure.message?.contains("readback mismatch", ignoreCase = true) == true
+                val retryableVerificationFailure = mutationStarted && failure is RestoreVerificationException
                 if (!retryableVerificationFailure) {
                     try {
                         closeSession()

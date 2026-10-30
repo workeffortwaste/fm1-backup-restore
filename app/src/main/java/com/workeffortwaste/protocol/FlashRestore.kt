@@ -3,6 +3,12 @@ package com.workeffortwaste.protocol
 import java.security.MessageDigest
 
 /**
+ * The final readback pass found device bytes that differ from the restore image after programming.
+ * Distinct from other [ProtocolException]s because the loader is still running and a retry is safe.
+ */
+class RestoreVerificationException(message: String) : ProtocolException(message)
+
+/**
  * Fixed FM1 layout only: the first 16 KiB is preserved and ignored; the full writable range is verified.
  * Hardware validation is still required. Exceptions stop immediately; mutation is never retried here.
  */
@@ -10,11 +16,14 @@ class FlashRestore(private val protocol: Fm1Protocol) {
     /**
      * Rechecks live identity/JEDEC metadata before mutation. Source bootloader bytes are ignored.
      * [image] is copied once so caller changes cannot affect the expected bytes during programming.
-     * Writable sectors are read and compared before mutation; matching sectors are skipped.
+     * Writable sectors are read and compared before mutation; matching sectors are skipped, and
+     * comparison stops at the first differing page because the whole sector must be erased anyway.
+     * After an erase, pages that are entirely 0xFF are not written: that is already the erased state.
      * [mutationStarting] runs immediately before the first erase, allowing conservative failure UI
      * even when an erase times out and the device's actual state is unknown.
      * [progress] supplies bytes and total within the current writable phase.
      * Returns SHA-256 of the verified writable range only, not of the protected part of the source.
+     * Throws [RestoreVerificationException] if the readback pass differs from [image].
      */
     fun run(
         image: ByteArray,
@@ -39,9 +48,9 @@ class FlashRestore(private val protocol: Fm1Protocol) {
             var matches = true
             for (address in sector until sector + SECTOR_SIZE step PAGE_SIZE) {
                 checkCancelled()
-                val actual = readExact(address)
-                if (!actual.contentEquals(expected.copyOfRange(address, address + PAGE_SIZE))) {
+                if (!pageMatches(readExact(address), expected, address)) {
                     matches = false
+                    break
                 }
             }
             if (!matches) {
@@ -52,6 +61,7 @@ class FlashRestore(private val protocol: Fm1Protocol) {
                 protocol.eraseSector(sector.toLong())
                 for (address in sector until sector + SECTOR_SIZE step PAGE_SIZE) {
                     checkCancelled()
+                    if (isErasedPage(expected, address)) continue
                     protocol.writeFlash(address.toLong(), expected.copyOfRange(address, address + PAGE_SIZE))
                 }
             }
@@ -65,8 +75,8 @@ class FlashRestore(private val protocol: Fm1Protocol) {
         for (address in PROTECTED_SIZE until FLASH_SIZE step PAGE_SIZE) {
             checkCancelled()
             val actual = readExact(address)
-            if (!actual.contentEquals(expected.copyOfRange(address, address + PAGE_SIZE))) {
-                throw ProtocolException("Restore readback mismatch at 0x%06X".format(address))
+            if (!pageMatches(actual, expected, address)) {
+                throw RestoreVerificationException("Restore readback mismatch at 0x%06X".format(address))
             }
             digest.update(actual)
             progress(
@@ -82,8 +92,24 @@ class FlashRestore(private val protocol: Fm1Protocol) {
     /** A short simulated or device read is never padded into a plausible backup or baseline. */
     private fun readExact(address: Int): ByteArray {
         val bytes = protocol.readFlash(address.toLong(), PAGE_SIZE)
-        if (bytes.size != PAGE_SIZE) throw ProtocolException("Incomplete flash read at $address")
+        if (bytes.size != PAGE_SIZE) throw ProtocolException("Incomplete flash read at 0x%06X".format(address))
         return bytes
+    }
+
+    /** Compares one device page against the image in place, without copying the expected range. */
+    private fun pageMatches(actual: ByteArray, expected: ByteArray, address: Int): Boolean {
+        for (offset in 0 until PAGE_SIZE) {
+            if (actual[offset] != expected[address + offset]) return false
+        }
+        return true
+    }
+
+    /** A page the image leaves entirely 0xFF already matches freshly erased NOR; no write is needed. */
+    private fun isErasedPage(expected: ByteArray, address: Int): Boolean {
+        for (offset in 0 until PAGE_SIZE) {
+            if (expected[address + offset] != ERASED) return false
+        }
+        return true
     }
 
     companion object {
@@ -92,5 +118,6 @@ class FlashRestore(private val protocol: Fm1Protocol) {
         const val SECTOR_SIZE = 4096
         const val PAGE_SIZE = 256
         const val WRITABLE_SIZE = FLASH_SIZE - PROTECTED_SIZE
+        private const val ERASED: Byte = -1
     }
 }

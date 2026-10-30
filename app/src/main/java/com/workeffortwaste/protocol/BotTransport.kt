@@ -25,7 +25,7 @@ interface ScsiTransport {
 }
 
 /** Invalid device response or failed I/O; never safe to treat as a successful partial backup. */
-class ProtocolException(message: String) : IOException(message)
+open class ProtocolException(message: String) : IOException(message)
 
 /**
  * USB Mass Storage Bulk-Only Transport (BOT), restricted to one LUN and exact transfers.
