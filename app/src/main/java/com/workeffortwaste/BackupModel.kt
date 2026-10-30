@@ -114,7 +114,7 @@ internal fun statusMessage(heading: String, secondary: String): StatusMessage = 
 )
 
 internal fun discoveryStatusMessage(noDevice: Boolean): StatusMessage = if (noDevice) {
-    statusMessage("No FM-1 connected", "Refresh app or connect FM-1 via USB")
+    statusMessage("No FM-1 connected", "Refresh or connect FM-1 via USB")
 } else {
     statusMessage("Discovering FM-1", "Searching for USB connection")
 }
