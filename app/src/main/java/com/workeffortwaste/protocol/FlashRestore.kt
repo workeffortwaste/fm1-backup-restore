@@ -3,13 +3,14 @@ package com.workeffortwaste.protocol
 import java.security.MessageDigest
 
 /**
- * Fixed FM1 layout only: the first 16 KiB is preserved and ignored; only written bytes are verified.
+ * Fixed FM1 layout only: the first 16 KiB is preserved and ignored; the full writable range is verified.
  * Hardware validation is still required. Exceptions stop immediately; mutation is never retried here.
  */
 class FlashRestore(private val protocol: Fm1Protocol) {
     /**
      * Rechecks live identity/JEDEC metadata before mutation. Source bootloader bytes are ignored.
      * [image] is copied once so caller changes cannot affect the expected bytes during programming.
+     * Writable sectors are read and compared before mutation; matching sectors are skipped.
      * [mutationStarting] runs immediately before the first erase, allowing conservative failure UI
      * even when an erase times out and the device's actual state is unknown.
      * [progress] supplies bytes and total within the current writable phase.
@@ -32,17 +33,33 @@ class FlashRestore(private val protocol: Fm1Protocol) {
         // A plausible 24-bit JEDEC ID must have real manufacturer/type bytes and density 0x14.
         // Unknown or conflicting density is a rejection, not permission to trust the file's length.
         info.requireFm1Nor()
+        var mutationStarted = false
         for (sector in PROTECTED_SIZE until FLASH_SIZE step SECTOR_SIZE) {
             checkCancelled()
-            if (sector == PROTECTED_SIZE) mutationStarting()
-            protocol.eraseSector(sector.toLong())
+            var matches = true
             for (address in sector until sector + SECTOR_SIZE step PAGE_SIZE) {
                 checkCancelled()
-                protocol.writeFlash(address.toLong(), expected.copyOfRange(address, address + PAGE_SIZE))
-                progress(
-                    "Writing to FM-1 flash", (address + PAGE_SIZE - PROTECTED_SIZE).toLong(), WRITABLE_SIZE.toLong(),
-                )
+                val actual = readExact(address)
+                if (!actual.contentEquals(expected.copyOfRange(address, address + PAGE_SIZE))) {
+                    matches = false
+                }
             }
+            if (!matches) {
+                if (!mutationStarted) {
+                    mutationStarting()
+                    mutationStarted = true
+                }
+                protocol.eraseSector(sector.toLong())
+                for (address in sector until sector + SECTOR_SIZE step PAGE_SIZE) {
+                    checkCancelled()
+                    protocol.writeFlash(address.toLong(), expected.copyOfRange(address, address + PAGE_SIZE))
+                }
+            }
+            progress(
+                "Writing to FM-1 flash",
+                (sector + SECTOR_SIZE - PROTECTED_SIZE).toLong(),
+                WRITABLE_SIZE.toLong(),
+            )
         }
         val digest = MessageDigest.getInstance("SHA-256")
         for (address in PROTECTED_SIZE until FLASH_SIZE step PAGE_SIZE) {

@@ -148,9 +148,62 @@ class RestoreTest {
             }
         }
         val reads = device.commands.filter { it.code == 0xfd05 }
-        assertEquals(4032, reads.size)
+        assertEquals(8064, reads.size)
         assertEquals(0x4000, reads.first().address)
+        assertEquals(0xfff00, reads[4031].address)
+        assertEquals(0x4000, reads[4032].address)
         assertEquals(0xfff00, reads.last().address)
+        val firstEraseIndex = device.commands.indexOfFirst { it.code == 0xfb01 }
+        assertTrue(device.commands.take(firstEraseIndex).count { it.code == 0xfd05 } >= 16)
+    }
+
+    @Test
+    fun matchingSectorsAreSkippedButEntireWritableRangeIsVerified() {
+        val source = image
+        val device = MemoryScsi(source)
+        source.copyInto(device.memory, 0x4000, 0x4000, 0x5000)
+        source.copyInto(device.memory, 0xff000, 0xff000, 0x100000)
+        var mutationStarted = false
+
+        restore(device, source, mutationStarting = { mutationStarted = true })
+
+        assertTrue(mutationStarted)
+        assertTrue(device.mutations.none { it.address in 0x4000 until 0x5000 })
+        assertTrue(device.mutations.none { it.address in 0xff000 until 0x100000 })
+        assertEquals(250, device.mutations.count { it.code == 0xfb01 })
+        assertEquals(4000, device.mutations.count { it.code == 0xfb04 })
+        assertArrayEquals(
+            source.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
+            device.memory.copyOfRange(FlashRestore.PROTECTED_SIZE, FlashRestore.FLASH_SIZE),
+        )
+        val reads = device.commands.filter { it.code == 0xfd05 }
+        assertEquals(8064, reads.size)
+        assertEquals((0x4000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(),
+            reads.take(4032).map { it.address })
+        assertEquals((0x4000 until 0x100000 step FlashRestore.PAGE_SIZE).toList(),
+            reads.drop(4032).map { it.address })
+    }
+
+    @Test
+    fun identicalWritableImageSkipsAllMutationsAndStillCompletesWritePhase() {
+        val source = image
+        val device = MemoryScsi(source)
+        source.copyInto(device.memory, FlashRestore.PROTECTED_SIZE, FlashRestore.PROTECTED_SIZE)
+        var mutationStarted = false
+        val progress = mutableListOf<Pair<String, Long>>()
+
+        restore(device, source, mutationStarting = { mutationStarted = true }) { phase, bytes, _ ->
+            progress += phase to bytes
+        }
+
+        assertFalse(mutationStarted)
+        assertTrue(device.mutations.isEmpty())
+        assertEquals(8064, device.commands.count { it.code == 0xfd05 })
+        assertEquals(FlashRestore.WRITABLE_SIZE.toLong(), progress.last { it.first == "Writing to FM-1 flash" }.second)
+        assertEquals(
+            FlashRestore.WRITABLE_SIZE.toLong(),
+            progress.last { it.first == "Verifying: reading back written data" }.second,
+        )
     }
 
     @Test
@@ -173,9 +226,13 @@ class RestoreTest {
             "Verifying: reading back written data" to FlashRestore.WRITABLE_SIZE.toLong(),
         )
         val lastBytes = linkedMapOf<String, Long>()
+        val increments = mapOf(
+            "Writing to FM-1 flash" to FlashRestore.SECTOR_SIZE.toLong(),
+            "Verifying: reading back written data" to FlashRestore.PAGE_SIZE.toLong(),
+        )
         restore(MemoryScsi(image), progress = { phase, bytes, total ->
             assertEquals(phases.getValue(phase), total)
-            assertEquals((lastBytes[phase] ?: 0L) + FlashRestore.PAGE_SIZE, bytes)
+            assertEquals((lastBytes[phase] ?: 0L) + increments.getValue(phase), bytes)
             lastBytes[phase] = bytes
         })
         assertEquals(phases.keys.toList(), lastBytes.keys.toList())
@@ -307,12 +364,14 @@ class RestoreTest {
     fun verificationReadFailureIsNotRetried() {
         val device = MemoryScsi(image)
         device.before = {
-            if (it.code == 0xfd05 && it.address == 0x4000) throw IOException("Readback disconnected")
+            if (device.mutations.isNotEmpty() && it.code == 0xfd05 && it.address == 0x4000) {
+                throw IOException("Readback disconnected")
+            }
         }
         assertThrows(IOException::class.java) { restore(device) }
         assertEquals(0xfd05, device.commands.last().code)
         assertEquals(0x4000, device.commands.last().address)
-        assertEquals(1, device.commands.count { it.code == 0xfd05 && it.address == 0x4000 })
+        assertEquals(2, device.commands.count { it.code == 0xfd05 && it.address == 0x4000 })
     }
 
     @Test
@@ -445,7 +504,7 @@ class RestoreTest {
         assertTrue(device.commands.isEmpty())
         assertThrows(CancellationException::class.java) {
             restore(device, cancelled = {
-                if (device.commands.lastOrNull()?.let {
+                if (device.mutations.isNotEmpty() && device.commands.lastOrNull()?.let {
                         it.code == 0xfd05 && it.address == 0x4000
                     } == true) throw CancellationException()
             })
