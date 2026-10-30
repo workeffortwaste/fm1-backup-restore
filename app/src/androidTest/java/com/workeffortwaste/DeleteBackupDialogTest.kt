@@ -8,6 +8,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.core.content.edit
 import androidx.test.core.app.ActivityScenario
@@ -58,6 +59,23 @@ class DeleteBackupDialogTest {
 
     @Test fun unnamedBackupShowsLibraryFallbackAndDeletesOnlyAfterConfirmation() {
         checkDialog(null, "Firmware unknown", delete = true)
+    }
+
+    @Test fun mainMenuOpensFirmwareExportModalAndCancelPreservesLibrary() {
+        val name = "Export modal test"
+        createBackup(name)
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
+            compose.waitUntil(timeoutMillis = 10000) {
+                compose.onAllNodes(hasText(name)).fetchSemanticsNodes().isNotEmpty()
+            }
+            compose.onNodeWithContentDescription("More options").performClick()
+            compose.onNodeWithText("Export all backups").performClick()
+            compose.onNode(hasText("Export all backups") and hasAnyAncestor(isDialog())).assertIsDisplayed()
+            compose.onNodeWithText("1 unique backup as a ZIP archive.").assertIsDisplayed()
+            compose.onNodeWithText("Cancel").performClick()
+            compose.onNodeWithText("Export all backups").assertDoesNotExist()
+            assertTrue(requireNotNull(backup).exists())
+        }
     }
 
     @Test fun pinningOnlyBackupHidesBackupsSectionAndUnpinningShowsItAgain() {

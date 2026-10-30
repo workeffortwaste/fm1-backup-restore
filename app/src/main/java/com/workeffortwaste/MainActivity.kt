@@ -1138,6 +1138,7 @@ class MainActivity : ComponentActivity() {
     ) {
         val state = model.state
         val v15RecoveryState = model.v15RecoveryState
+        val firmwareExportState = model.firmwareExportState
         LaunchedEffect(state.autoConnectPending, state.device, state.busy, updater.installerOpen) {
             if (state.autoConnectPending && state.device != null && !updater.installerOpen) {
                 onConnect()
@@ -1235,6 +1236,12 @@ class MainActivity : ComponentActivity() {
             exportSource = null
             if (destinationUri != null && id != null) model.exportBackup(id, destinationUri)
         }
+        val zipPicker = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/zip"),
+        ) { destinationUri ->
+            choosingFile = false
+            if (destinationUri != null) model.exportAllFirmware(destinationUri)
+        }
         // Keep menu dismissal and each action's follow-up UI state in one place.
         val handleBackupAction: (BackupAction, BackupEntry) -> Unit = { action, entry ->
             backupActions = null
@@ -1257,10 +1264,10 @@ class MainActivity : ComponentActivity() {
             }
         }
         val pickerAvailable = !choosingFile && !state.libraryLoading && savedRestore == null && deleteSource == null &&
-                state.selectedImport == null
+            state.selectedImport == null && !firmwareExportState.showDialog
         val editable = !state.busy && !v15RecoveryState.working && pickerAvailable
         val operationEligible = !state.busy && state.ready && batteryExempt && !state.libraryLoading &&
-                !v15RecoveryState.working
+            !v15RecoveryState.working && !firmwareExportState.showDialog
         if (savedRestore != null) {
             val savedEntry = state.backups.find { it.id == savedRestore }
             RestoreConfirmationDialog(
@@ -1410,6 +1417,16 @@ class MainActivity : ComponentActivity() {
             state = v15RecoveryState,
             onDismiss = model::dismissV15RecoveryDialog,
             onCreate = model::createV15RecoveryBackup,
+        )
+        FirmwareExportDialog(
+            state = firmwareExportState,
+            exportEnabled = !choosingFile && !state.busy,
+            onDismiss = model::dismissFirmwareExportDialog,
+            onCancel = model::cancelFirmwareExport,
+            onExport = {
+                choosingFile = true
+                zipPicker.launch("fm1-backups-${java.time.LocalDate.now()}.zip")
+            },
         )
         if (state.showTransferProgress) {
             TransferProgressScreen(
@@ -1572,6 +1589,15 @@ class MainActivity : ComponentActivity() {
                                                     "*/*"
                                                 )
                                             )
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Export all backups") },
+                                        shape = MenuDefaults.middleItemShape,
+                                        enabled = editable && state.backups.isNotEmpty(),
+                                        onClick = {
+                                            showAppMenu = false
+                                            onButtonClick(model::showFirmwareExportDialog)
                                         },
                                     )
                                     DropdownMenuItem(

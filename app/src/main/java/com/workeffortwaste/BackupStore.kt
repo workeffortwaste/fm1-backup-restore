@@ -5,9 +5,12 @@ import com.workeffortwaste.protocol.RestoreImage
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 import java.text.Normalizer
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
 data class BackupEntry(val id: String, val createdAt: Long, val sha256: String, val firmwareIdentity: String? = null)
 
@@ -74,11 +77,42 @@ class BackupStore(private val directory: File) {
         }.sortedWith(compareByDescending<BackupEntry> { it.createdAt }.thenByDescending { it.id })
     }
 
-    fun open(id: String): InputStream {
+    fun open(id: String, checkCancelled: () -> Unit = {}): InputStream {
         val entry = entry(id)
         val file = owned(id)
-        if (!verified(file, entry.sha256)) throw IOException("Saved backup is missing or damaged")
+        if (!verified(file, entry.sha256, checkCancelled)) throw IOException("Saved backup is missing or damaged")
         return file.inputStream()
+    }
+
+    fun exportZip(
+        entries: List<BackupEntry>,
+        destination: OutputStream,
+        checkCancelled: () -> Unit = {},
+        progress: (bytes: Long, total: Long) -> Unit = { _, _ -> },
+    ) {
+        ZipOutputStream(destination.buffered()).use { zip ->
+            val unique = uniqueExports(entries)
+            require(unique.isNotEmpty()) { "No backups to export" }
+            val total = unique.size.toLong() * FlashRestore.FLASH_SIZE
+            var processed = 0L
+            val buffer = ByteArray(65536)
+            for (entry in unique) {
+                checkCancelled()
+                open(entry.id, checkCancelled).use { source ->
+                    zip.putNextEntry(ZipEntry(exportFileName(entry)))
+                    while (true) {
+                        checkCancelled()
+                        val count = source.read(buffer)
+                        if (count < 0) break
+                        zip.write(buffer, 0, count)
+                        processed += count
+                        progress(processed, total)
+                    }
+                    zip.closeEntry()
+                }
+            }
+            checkCancelled()
+        }
     }
 
     fun delete(id: String) {
@@ -156,6 +190,8 @@ class BackupStore(private val directory: File) {
     companion object {
         /** Hex-encoded in the filename; 72 characters fits the 255-byte limit beside a 19-digit counter. */
         const val MAX_NAME_LENGTH = 72
+        fun uniqueExports(entries: List<BackupEntry>): List<BackupEntry> = entries.distinctBy(::exportFileName)
+
         fun exportFileName(entry: BackupEntry): String {
             val plainName = Normalizer.normalize(
                 entry.firmwareIdentity ?: "Firmware unknown",

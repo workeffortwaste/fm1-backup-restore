@@ -66,6 +66,16 @@ enum class TransferOutcome {
 
 data class SelectedImport(val sourceName: String, val sha256: String)
 
+data class FirmwareExportState(
+    val showDialog: Boolean = false,
+    val entries: List<BackupEntry> = emptyList(),
+    val working: Boolean = false,
+    val cancelling: Boolean = false,
+    val progress: Int = 0,
+    val message: String = "",
+    val completed: Boolean = false,
+)
+
 data class V15RecoveryState(
     val showDialog: Boolean = false,
     val working: Boolean = false,
@@ -237,6 +247,8 @@ class BackupModel(
     var state by mutableStateOf(BackupState())
         private set
     var v15RecoveryState by mutableStateOf(V15RecoveryState())
+        private set
+    var firmwareExportState by mutableStateOf(FirmwareExportState())
         private set
 
     /** Delivers worker results to Compose and serializes them with activity/broadcast callbacks. */
@@ -1455,6 +1467,61 @@ class BackupModel(
 
     private fun savePinnedBackups(ids: Set<String>) {
         backupPreferences.edit { putStringSet(PINNED_BACKUP_IDS, ids) }
+    }
+
+    fun showFirmwareExportDialog() {
+        if (state.busy || state.libraryLoading || v15RecoveryState.working || state.backups.isEmpty()) return
+        firmwareExportState = FirmwareExportState(
+            showDialog = true,
+            entries = BackupStore.uniqueExports(state.backups),
+        )
+    }
+
+    fun dismissFirmwareExportDialog() {
+        if (!firmwareExportState.working) firmwareExportState = FirmwareExportState()
+    }
+
+    fun cancelFirmwareExport() {
+        if (!firmwareExportState.working) return
+        firmwareExportState = firmwareExportState.copy(cancelling = true)
+        cancelled.set(true)
+    }
+
+    fun exportAllFirmware(uri: Uri) {
+        if (!firmwareExportState.showDialog || firmwareExportState.working || firmwareExportState.completed) return
+        val entries = firmwareExportState.entries
+        cancelled.set(false)
+        state = state.copy(busy = true, hash = "")
+        firmwareExportState = firmwareExportState.copy(working = true, message = "")
+        worker.execute {
+            val message = try {
+                val destination = application.contentResolver.openOutputStream(uri, "wt")
+                    ?: throw IOException("Could not open export destination")
+                var lastProgress = -1
+                backupStore.exportZip(entries, destination, ::checkCancelled) { bytes, total ->
+                    val progress = (bytes * 100 / total).toInt()
+                    if (progress != lastProgress) {
+                        lastProgress = progress
+                        mainHandler.post {
+                            firmwareExportState = firmwareExportState.copy(progress = progress)
+                        }
+                    }
+                }
+                "Exported ${entries.size} ${if (entries.size == 1) "backup" else "backups"} to ZIP."
+            } catch (failure: Exception) {
+                val deleted = deleteIncompleteDocument(uri)
+                val heading = if (failure is CancellationException) "Export cancelled."
+                else "Export failed: ${failure.message ?: "Could not save ZIP"}."
+                "$heading " + if (deleted) "The incomplete ZIP was removed."
+                else "Delete the incomplete ZIP manually."
+            }
+            mainHandler.post {
+                state = state.copy(busy = false)
+                firmwareExportState = firmwareExportState.copy(
+                    working = false, cancelling = false, completed = true, message = message,
+                )
+            }
+        }
     }
 
     fun exportBackup(id: String, uri: Uri) {

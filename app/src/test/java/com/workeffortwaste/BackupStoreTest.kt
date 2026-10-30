@@ -3,10 +3,14 @@ package com.workeffortwaste
 import com.workeffortwaste.protocol.FlashRestore
 import com.workeffortwaste.protocol.RestoreImage
 import java.io.File
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CancellationException
+import java.util.zip.ZipInputStream
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -73,6 +77,62 @@ class BackupStoreTest {
         assertThrows(IllegalArgumentException::class.java) {
             store.rename(long.id, "x".repeat(BackupStore.MAX_NAME_LENGTH + 1))
         }
+    }
+
+    @Test fun zipExportsUniqueNamesAndHashesWithExactContents() {
+        val first = store.rename(save().id, "My FM-1")
+        val duplicate = store.rename(save().id, "My FM/1")
+        val renamed = store.rename(save().id, "Other firmware")
+        val differentBytes = bytes.copyOf().apply { this[0] = 42 }
+        val differentHash = RestoreImage.hex(MessageDigest.getInstance("SHA-256").digest(differentBytes))
+        val pending = store.createPending().apply { writeBytes(differentBytes) }
+        val different = store.publish(pending, differentHash, "My FM-1")
+        val entries = listOf(first, duplicate, renamed, different)
+        assertEquals(3, BackupStore.uniqueExports(entries).size)
+        val destination = ByteArrayOutputStream()
+        var completed = 0L
+        store.exportZip(entries, destination, progress = { processed, total ->
+            assertTrue(processed >= completed)
+            assertEquals(3L * bytes.size, total)
+            completed = processed
+        })
+        val extracted = linkedMapOf<String, ByteArray>()
+        ZipInputStream(ByteArrayInputStream(destination.toByteArray())).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                assertNull(extracted.put(entry.name, zip.readBytes()))
+            }
+        }
+        assertEquals(3L * bytes.size, completed)
+        assertEquals(listOf(first, renamed, different).map(BackupStore::exportFileName), extracted.keys.toList())
+        assertArrayEquals(bytes, extracted[BackupStore.exportFileName(first)])
+        assertArrayEquals(bytes, extracted[BackupStore.exportFileName(renamed)])
+        assertArrayEquals(differentBytes, extracted[BackupStore.exportFileName(different)])
+        assertEquals(4, store.list().size)
+    }
+
+    @Test fun zipRejectsDamagedFirmwareAndPropagatesWriteFailures() {
+        val entry = save()
+        val failing = object : OutputStream() {
+            override fun write(value: Int) { throw IOException("Disk full") }
+        }
+        assertThrows(IOException::class.java) { store.exportZip(listOf(entry), failing) }
+        File(directory, entry.id).writeBytes(ByteArray(bytes.size))
+        assertThrows(IOException::class.java) { store.exportZip(listOf(entry), ByteArrayOutputStream()) }
+    }
+
+    @Test fun zipCancellationStopsVerificationAndWritingWithoutChangingLibrary() {
+        val entry = save()
+        assertThrows(CancellationException::class.java) {
+            store.exportZip(listOf(entry), ByteArrayOutputStream(), { throw CancellationException() })
+        }
+        var cancel = false
+        assertThrows(CancellationException::class.java) {
+            store.exportZip(listOf(entry), ByteArrayOutputStream(),
+                { if (cancel) throw CancellationException() },
+                { _, _ -> cancel = true })
+        }
+        assertEquals(listOf(entry), store.list())
     }
 
     @Test fun legacyBackupsHaveNoAssumedFirmware() {
