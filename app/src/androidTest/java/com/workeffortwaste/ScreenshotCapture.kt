@@ -20,8 +20,11 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.security.MessageDigest
 import java.util.Random
+import org.json.JSONObject
 
 /**
  * Screenshot-only runner: connected, backup and restore at 75%, and Settings for each theme.
@@ -189,6 +192,7 @@ class ScreenshotCapture {
     private fun capture(
         name: String,
         change: BackupState.() -> BackupState = { this },
+        configure: (MainActivity) -> Unit = {},
         navigate: () -> Unit = {},
     ) {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
@@ -204,6 +208,7 @@ class ScreenshotCapture {
             try {
                 stateOf(target).value = target.state.withSeededLibrary().change()
                 compose.waitForIdle()
+                scenario.onActivity(configure)
                 navigate()
                 compose.waitForIdle()
                 val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot()) {
@@ -226,6 +231,35 @@ class ScreenshotCapture {
                     }
                 }
                 stateOf(target).value = original
+            }
+        }
+    }
+
+    @Test
+    fun captureLatestReleaseNotes() {
+        val connection = URL("https://api.github.com/repos/workeffortwaste/fm1-backup-restore/releases/latest")
+            .openConnection() as HttpURLConnection
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 15_000
+        val release = try {
+            val json = connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+            checkNotNull(parseAppRelease(json, "v0.0.0"))
+        } finally {
+            connection.disconnect()
+        }
+        seed(shortLibrary)
+        setTheme(themes.first { it.fileName == "custom-green" })
+        capture("custom-green-update-latest", connected, configure = { activity ->
+            val updater = ViewModelProvider(activity)[AppUpdateModel::class.java]
+            val delegate = AppUpdateModel::class.java.getDeclaredField("state\$delegate")
+                .apply { isAccessible = true }.get(updater)
+            @Suppress("UNCHECKED_CAST")
+            val state = delegate as MutableState<AppUpdateState>
+            state.value = AppUpdateState(release = release, showDialog = true)
+        }) {
+            compose.waitUntil(10_000) {
+                compose.onAllNodes(androidx.compose.ui.test.hasText("Full Changelog", substring = true))
+                    .fetchSemanticsNodes().isNotEmpty()
             }
         }
     }

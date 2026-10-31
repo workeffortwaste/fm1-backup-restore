@@ -16,7 +16,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import com.mikepenz.markdown.m3.Markdown
+import com.mikepenz.markdown.m3.markdownColor
+import com.mikepenz.markdown.m3.markdownTypography
 import java.util.Locale
 
 @Composable
@@ -93,7 +99,28 @@ internal fun AppUpdateDialog(
                     Text(
                         "Download: ${String.format(Locale.ROOT, "%.1f", release.size / (1024.0 * 1024))} MiB",
                     )
-                    Text(release.notes.ifBlank { "No release notes provided." })
+                    Markdown(
+                        content = release.notes.ifBlank { "No release notes provided." },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = markdownColor(
+                            text = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                        typography = markdownTypography(
+                            h1 = MaterialTheme.typography.titleMedium,
+                            h2 = MaterialTheme.typography.titleSmall,
+                            h3 = MaterialTheme.typography.titleSmall,
+                            h4 = MaterialTheme.typography.titleSmall,
+                            h5 = MaterialTheme.typography.titleSmall,
+                            h6 = MaterialTheme.typography.titleSmall,
+                            paragraph = MaterialTheme.typography.bodyMedium,
+                            textLink = TextLinkStyles(
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Normal,
+                                    textDecoration = TextDecoration.Underline,
+                                ).toSpanStyle(),
+                            ),
+                        ),
+                    )
                 }
                 if (state.downloading) {
                     Text("Downloading: ${state.progress}%")
