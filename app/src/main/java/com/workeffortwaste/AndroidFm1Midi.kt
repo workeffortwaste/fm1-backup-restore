@@ -113,7 +113,7 @@ object AndroidFm1Midi {
         try {
             checkCancelled()
             val port = midiDevice.openInputPort(inputPort.portNumber)
-                ?: throw ProtocolException("FM-1 MIDI port is busy or disconnected; no SysEx was sent")
+                ?: throw ProtocolException("FM-1 MIDI port is busy or disconnected. You might have the FM-1 connected in another app or browser.")
             try {
                 checkCancelled()
                 val send: (ByteArray) -> Unit = { bytes ->
