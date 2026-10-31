@@ -75,7 +75,7 @@ Keep the USB cable and power connected until the restore has finished and been v
 
 Didn't manage to take a backup of your device before you started flashing custom firmware?
 
-Choose **Create recovery snapshot** from the top menu. The app downloads and verifies the official v15 firmware update directly from M-Vave, reconstructs a stock v15 snapshot, and adds **FM-1_015 RECOVERY** to your library.
+Choose **Create recovery snapshot** from the top menu. The app downloads and verifies the official v15 firmware update directly from M-VAVE, reconstructs a stock v15 snapshot, and adds **FM-1_015 RECOVERY** to your library.
 
 > **How's this work?** <br/>It takes all the regions of data that are available in the v15 .fwsc update and creates a complete flash snapshot using them. Any regions of data that are missing from the .fwsc (settings, BTIF) are automatically recreated when the FM-1 boots.
 
