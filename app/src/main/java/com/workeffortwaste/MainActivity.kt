@@ -561,7 +561,7 @@ class MainActivity : ComponentActivity() {
                     resultSummary?.let { summary ->
                         AlertDialog(
                             onDismissRequest = { resultSummary = null },
-                            title = { Text("Transfer result") },
+                            title = { Text("Notification") },
                             text = {
                                 SelectionContainer {
                                     Text(summary, modifier = Modifier.verticalScroll(rememberScrollState()))

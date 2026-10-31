@@ -24,34 +24,34 @@ class TransferResultTest {
 
     @Test fun notificationOpensClosableDialogAndDoesNotReplayAfterRecreation() {
         ActivityScenario.launch<MainActivity>(resultIntent()).use { scenario ->
-            compose.onNodeWithText("Transfer result").assertIsDisplayed()
+            compose.onNodeWithText("Notification").assertIsDisplayed()
             compose.onNodeWithText(summary).assertIsDisplayed()
             scenario.onActivity { assertFalse(it.intent.hasExtra(TransferService.RESULT_SUMMARY)) }
 
             scenario.recreate()
             compose.onNodeWithText(summary).assertIsDisplayed()
             compose.onNodeWithText("Close").performClick()
-            compose.onNodeWithText("Transfer result").assertDoesNotExist()
+            compose.onNodeWithText("Notification").assertDoesNotExist()
             compose.onNodeWithText(summary).assertDoesNotExist()
 
             scenario.recreate()
-            compose.onNodeWithText("Transfer result").assertDoesNotExist()
+            compose.onNodeWithText("Notification").assertDoesNotExist()
             compose.onNodeWithText(summary).assertDoesNotExist()
         }
     }
 
     @Test fun notificationAlsoOpensDialogInAlreadyRunningActivity() {
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
-            compose.onNodeWithText("Transfer result").assertDoesNotExist()
+            compose.onNodeWithText("Notification").assertDoesNotExist()
             scenario.onActivity { it.startActivity(resultIntent()) }
             compose.waitUntil(5_000) {
-                compose.onAllNodesWithText("Transfer result").fetchSemanticsNodes().isNotEmpty()
+                compose.onAllNodesWithText("Notification").fetchSemanticsNodes().isNotEmpty()
             }
             compose.onNodeWithText(summary).assertIsDisplayed()
             compose.onNodeWithText("Close").performClick()
             compose.onNodeWithText(summary).assertDoesNotExist()
             scenario.recreate()
-            compose.onNodeWithText("Transfer result").assertDoesNotExist()
+            compose.onNodeWithText("Notification").assertDoesNotExist()
         }
     }
 }
