@@ -166,7 +166,7 @@ internal fun BackupState.disconnectByUser(): BackupState = copy(
     autoConnectPending = false,
     ready = false,
     readingFirmwareIdentity = false,
-    status = statusMessage("FM-1 disconnected", "Tap Refresh to reconnect"),
+    status = statusMessage("FM-1 disconnected", "Refresh to reconnect"),
     firmwareIdentity = null,
     progress = 0f,
     transfer = null,
@@ -343,7 +343,7 @@ class BackupModel(
                         post { current ->
                             if (current.busy || current.discoverySuppressedByUser) current else current.copy(
                                 ready = false,
-                                status = statusMessage("Connection failed", "FM-1 stopped responding. Tap Refresh"),
+                                status = statusMessage("Connection failed", "FM-1 stopped responding. Refresh"),
                             )
                         }
                     }
@@ -867,7 +867,7 @@ class BackupModel(
             }
             if (device != null) {
                 if (!manager.hasPermission(device)) {
-                    throw ProtocolException("Loader reconnected: tap Refresh and Connect to grant USB permission again")
+                    throw ProtocolException("Loader reconnected: Refresh and Connect to grant USB permission again")
                 }
                 try {
                     val loaderProtocol = open(device)
@@ -941,7 +941,7 @@ class BackupModel(
                     val message = when (failure) {
                         is CancellationException -> if (sysExSent) {
                             statusMessage(
-                                "Stopped waiting", "The SysEx was already sent; the FM-1 may still reboot. Tap Refresh"
+                                "Stopped waiting", "The SysEx was already sent; the FM-1 may still reboot. Refresh"
                             )
                         } else {
                             statusMessage("Bootloader request cancelled", "No bootloader request was sent")
@@ -970,7 +970,7 @@ class BackupModel(
             if (device != null && (sawDisconnect || device.deviceName !in previousDeviceNames)) return device.deviceName
             Thread.sleep(200)
         }
-        throw ProtocolException("Bootloader USB interface did not appear. Check the cable and tap Refresh.")
+        throw ProtocolException("Bootloader USB interface did not appear. Check the cable and Refresh.")
     }
 
     /** Identifies WL82, starts the fixed loader if required, and probes NOR before enabling backup. */

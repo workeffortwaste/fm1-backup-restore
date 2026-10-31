@@ -104,7 +104,7 @@ object AndroidFm1Midi {
         val deviceInfo = devices.singleOrNull()
             ?: throw ProtocolException("More than one FM-1 MIDI interface found. Connect only one FM-1.")
         if (expectedDeviceId != null && deviceInfo.id != expectedDeviceId) {
-            throw ProtocolException("FM-1 MIDI connection changed during discovery. Tap Refresh again.")
+            throw ProtocolException("FM-1 MIDI connection changed during discovery. Refresh again.")
         }
         val inputPort = deviceInfo.ports.singleOrNull { port -> port.type == MidiDeviceInfo.PortInfo.TYPE_INPUT }
             ?: throw ProtocolException("Expected one FM-1 MIDI input port; no SysEx was sent")
