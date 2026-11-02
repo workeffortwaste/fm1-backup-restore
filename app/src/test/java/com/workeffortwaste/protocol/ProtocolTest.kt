@@ -18,6 +18,18 @@ import java.util.concurrent.CancellationException
 
 /** Wire-format and backup safety regressions; these tests need neither Android nor USB hardware. */
 class ProtocolTest {
+    @Test
+    fun applicationRebootUsesRunAppWithoutFlashMutation() {
+        val transport = RecordingScsi()
+        Fm1Protocol(transport).runApp()
+        val command = transport.commands.single()
+        val expected = ByteArray(16) { 0xff.toByte() }
+        byteArrayOf(0xfc.toByte(), 0x0c, 0, 0, 0, 1).copyInto(expected)
+        assertArrayEquals(expected, command.cdb)
+        assertEquals(16, command.inputLength)
+        assertTrue(command.output.isEmpty())
+    }
+
     /** The APK asset must retain the exact WL82 loader bytes and exclude other chip loaders. */
     @Test
     fun bundlesOnlyTheOriginalWl82Loader() {

@@ -1547,7 +1547,7 @@ class MainActivity : ComponentActivity() {
                                     painter = painterResource(
                                         if (state.ready) R.drawable.ic_eject else R.drawable.ic_refresh,
                                     ),
-                                    contentDescription = if (state.ready) "Disconnect FM-1" else "Refresh",
+                                    contentDescription = if (state.ready) "Return FM-1 to MIDI mode" else "Refresh",
                                 )
                             }
                             Box {
@@ -1646,6 +1646,7 @@ class MainActivity : ComponentActivity() {
                         ) {
                             val showStatus = discoveringDevice || noDevice || state.status.isNotEmpty
                             val connectionFailed = state.status.heading.startsWith("Connection failed") ||
+                                    state.status.heading.startsWith("Return to MIDI mode failed") ||
                                     state.status.heading.startsWith("Bootloader request failed") ||
                                     state.status.heading.startsWith("Restore verification failed")
                             val showingBootloaderVerification = bootloaderVerificationState.working
@@ -1679,6 +1680,7 @@ class MainActivity : ComponentActivity() {
                             }
                             val connectingToDevice = state.busy && (
                                     state.findingBootloader ||
+                                            state.status.heading.startsWith("Returning FM-1 to MIDI mode") ||
                                             state.status.heading.startsWith("Reading FM-1 firmware identity") ||
                                             state.status.heading.startsWith("Waiting for USB permission") ||
                                             state.status.heading.startsWith("Waiting for FM-1") ||
