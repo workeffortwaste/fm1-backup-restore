@@ -1,3 +1,7 @@
+> [!NOTE]
+> Are you here to try and fix an FM-1 but don't have a previous backup?
+> [Generate a stock v15 recovery snapshot](#create-a-stock-v15-recovery-snapshot).
+
 # FM-1 Backup & Restore *for Android*
 
 _Back up and restore your M-VAVE FM-1 from an Android phone._
@@ -73,11 +77,22 @@ Keep the USB cable and power connected until the restore has finished and been v
 
 ### Create a stock v15 recovery snapshot
 
-Didn't manage to take a backup of your device before you started flashing custom firmware?
+*Didn't manage to take a backup of your device before you started flashing custom firmware?*
 
-Choose **Create recovery snapshot** from the top menu. The app downloads and verifies the official v15 firmware update directly from M-VAVE, reconstructs a stock v15 snapshot, and adds **FM-1_015 RECOVERY** to your library.
+A fresh install of the app will nudge new users to create a recovery snapshot, alternatively you can choose *Create a recovery snapshot* from the top menu.
 
-> **How's this work?** <br/>It takes all the regions of data that are available in the v15 .fwsc update and creates a complete flash snapshot using them. Any regions of data that are missing from the .fwsc (settings, BTIF) are automatically recreated when the FM-1 boots.
+<table>
+  <tr>
+    <td align="center"><img src="https://github.com/user-attachments/assets/bbc9b8af-d038-41f9-975e-95054e2eb947" width="180" alt="Material You theme"><br>Create a recovery snapshot
+</td>
+  </tr>
+</table>
+
+The app then downloads and verifies the official v15 firmware update directly from M-VAVE, reconstructs a clean stock v15 flash, and adds the **FM-1_015 RECOVERY** backup to your library.
+
+Once **FM-1_015 RECOVERY** is available in your backups, opening the menu on the backup and selecting *restore* will take your FM-1 back to a clean slate.
+
+> **How's this work?** <br/>It takes all the regions of data that are available in the v15 .fwsc update and creates a complete flash snapshot using them. Any regions of data that are missing from the .fwsc (settings, BTIF, etc) are filled with `FF` and get automatically populated when the FM-1 boots.
 
 ## Themes
 
