@@ -2,6 +2,8 @@ package com.workeffortwaste
 
 import android.content.Context
 import android.content.Intent
+import androidx.compose.runtime.MutableState
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasText
@@ -11,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.performClick
 import androidx.core.content.edit
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
 import com.workeffortwaste.protocol.FlashRestore
@@ -94,6 +97,64 @@ class DeleteBackupDialogTest {
             compose.onNodeWithText("Export all backups").assertDoesNotExist()
             assertTrue(requireNotNull(backup).exists())
         }
+    }
+
+    @Test fun verifyBootloaderActionIsEnabledOnlyWhenConnectedAndOpensResult() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            var model: BackupModel? = null
+            compose.waitUntil(timeoutMillis = 10000) {
+                scenario.onActivity { activity ->
+                    model = ViewModelProvider(activity)[TransferConnection::class.java].model
+                }
+                model != null
+            }
+            val target = requireNotNull(model)
+            val state = backupState(target)
+            val original = target.state
+            try {
+                compose.runOnIdle {
+                    state.value = original.copy(
+                        ready = false,
+                        libraryLoading = false,
+                        backups = emptyList(),
+                        pinnedBackupIds = emptySet(),
+                        status = statusMessage("FM-1 successfully connected", "Ready to backup or restore full flash"),
+                    )
+                }
+                compose.onNodeWithContentDescription("More options").performClick()
+                compose.onNodeWithText("Diagnostics").performClick()
+                compose.onNodeWithText("Verify bootloader").assertIsNotEnabled()
+                compose.runOnIdle {
+                    state.value = state.value.copy(ready = true, deviceMode = DeviceMode.DOWNLOAD)
+                }
+                compose.onNodeWithText("Verify bootloader").performClick()
+                compose.onNodeWithText("Diagnostics").assertDoesNotExist()
+                compose.waitUntil(timeoutMillis = 5000) {
+                    compose.onAllNodes(hasText("Bootloader verification")).fetchSemanticsNodes().isNotEmpty()
+                }
+                compose.waitUntil(timeoutMillis = 5000) {
+                    compose.onAllNodes(hasText("Could not verify the bootloader: Connect to the FM-1 first"))
+                        .fetchSemanticsNodes().isNotEmpty()
+                }
+                compose.onNodeWithText("Could not verify the bootloader: Connect to the FM-1 first").assertIsDisplayed()
+                compose.runOnIdle {
+                    assertEquals(
+                        statusMessage("FM-1 successfully connected", "Ready to backup or restore full flash"),
+                        state.value.status,
+                    )
+                }
+            } finally {
+                compose.runOnIdle { state.value = original }
+            }
+        }
+    }
+
+    private fun backupState(model: BackupModel): MutableState<BackupState> {
+        val delegate = BackupModel::class.java.getDeclaredField("state\$delegate")
+            .apply { isAccessible = true }
+            .get(model)
+        @Suppress("UNCHECKED_CAST")
+        return delegate as MutableState<BackupState>
     }
 
     @Test fun pinningOnlyBackupHidesBackupsSectionAndUnpinningShowsItAgain() {

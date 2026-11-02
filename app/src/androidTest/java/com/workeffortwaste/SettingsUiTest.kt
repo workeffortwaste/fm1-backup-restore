@@ -92,13 +92,13 @@ class SettingsUiTest {
     @Test fun diagnosticsCopyKeepsDialogOpenAndCopiesAllDetails() {
         withActivity { scenario ->
             compose.onNodeWithContentDescription("More options").performClick()
-            compose.onNodeWithText("USB diagnostics").performClick()
+            compose.onNodeWithText("Diagnostics").performClick()
             compose.onNodeWithText("Copy").performClick()
             compose.onNodeWithText("Close").assertIsDisplayed()
             var copied: String? = null
             scenario.onActivity { activity ->
                 val clip = activity.getSystemService(ClipboardManager::class.java).primaryClip
-                assertEquals("USB diagnostics", clip?.description?.label)
+                assertEquals("Diagnostics", clip?.description?.label)
                 copied = clip?.getItemAt(0)?.text?.toString()
             }
             assertFalse(copied.isNullOrBlank())

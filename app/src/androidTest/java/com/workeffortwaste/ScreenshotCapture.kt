@@ -5,8 +5,11 @@ import android.app.UiModeManager
 import android.graphics.Bitmap
 import android.os.ParcelFileDescriptor
 import android.os.Build
+import android.os.SystemClock
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -27,7 +30,7 @@ import java.util.Random
 import org.json.JSONObject
 
 /**
- * Screenshot-only runner: connected, backup and restore at 75%, and Settings for each theme.
+ * Screenshot-only runner: connected, empty-library, transfer progress, Settings, and release notes.
  * Run through `screenshotThemes`, which pulls the PNGs into the repository's `screenshots` directory.
  */
 class ScreenshotCapture {
@@ -104,15 +107,15 @@ class ScreenshotCapture {
         instrumentation.uiAutomation.executeShellCommand(command)
             .let(ParcelFileDescriptor::AutoCloseInputStream).bufferedReader().use { it.readText() }
 
-    /** Replaces the dummy library; the factory image is always pinned and the rest are newest-first. */
-    private fun seed(names: List<String>) {
+    /** Replaces the dummy library; optionally includes a pinned factory backup. */
+    private fun seed(names: List<String>, includePinnedFactory: Boolean = true) {
         seeded.forEach { it.delete() }
         seeded.clear()
         backupDirectory.mkdirs()
         val image = ByteArray(FlashRestore.FLASH_SIZE).also { Random(1).nextBytes(it) }
         val hash = MessageDigest.getInstance("SHA-256").digest(image).joinToString("") { "%02x".format(it) }
         val now = System.currentTimeMillis()
-        val ordered = listOf(pinnedName) + names
+        val ordered = (if (includePinnedFactory) listOf(pinnedName) else emptyList()) + names
         ordered.forEachIndexed { index, name ->
             val identity = name.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }
             val created = now - index * 86_400_000L * 2
@@ -120,7 +123,12 @@ class ScreenshotCapture {
             file.writeBytes(image)
             seeded += file
         }
-        backupPreferences.edit(commit = true) { putStringSet("pinned_backup_ids", setOf(seeded.first().name)) }
+        backupPreferences.edit(commit = true) {
+            putStringSet(
+                "pinned_backup_ids",
+                if (includePinnedFactory) setOf(seeded.first().name) else emptySet(),
+            )
+        }
     }
 
     private fun stateOf(model: BackupModel): MutableState<BackupState> {
@@ -235,8 +243,7 @@ class ScreenshotCapture {
         }
     }
 
-    @Test
-    fun captureLatestReleaseNotes() {
+    private fun captureLatestReleaseNotes() {
         val connection = URL("https://api.github.com/repos/workeffortwaste/fm1-backup-restore/releases/latest")
             .openConnection() as HttpURLConnection
         connection.connectTimeout = 15_000
@@ -264,6 +271,123 @@ class ScreenshotCapture {
         }
     }
 
+    private fun setBootloaderVerification(activity: MainActivity, state: BootloaderVerificationState) {
+        val model = ViewModelProvider(activity)[TransferConnection::class.java].model
+        val delegate = BackupModel::class.java.getDeclaredField("bootloaderVerificationState\$delegate")
+            .apply { isAccessible = true }
+            .get(model)
+        @Suppress("UNCHECKED_CAST")
+        (delegate as MutableState<BootloaderVerificationState>).value = state
+    }
+
+    private fun verifiedMbootloaderV12ScreenshotState(): BootloaderVerificationState {
+        val connection = URL(
+            "https://github.com/jvitkauskas/m-bootloader/releases/download/v1.2/fm1-uboot.boot",
+        ).openConnection() as HttpURLConnection
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 15_000
+        val container = try {
+            connection.inputStream.use { it.readBytes() }
+        } finally {
+            connection.disconnect()
+        }
+        check(sha256(container) == "9e5ec0e39dc55c167f8e289cfdac612d7d340b5f46100e1be2540ef4d6ec2f13") {
+            "Downloaded m-bootloader v1.2 does not match the published release SHA-256"
+        }
+
+        val region = ByteArray(FlashRestore.PROTECTED_SIZE) { 0xff.toByte() }
+        val flashHeader = ByteArray(32)
+        put16(flashHeader, 0, crc16(flashHeader.copyOfRange(2, 32)))
+        enc(flashHeader).copyInto(region)
+        val bootEntry = ByteArray(32)
+        put16(bootEntry, 2, crc16(container))
+        put32(bootEntry, 4, 0xa0)
+        put32(bootEntry, 8, container.size)
+        "uboot.boot".toByteArray(Charsets.US_ASCII).copyInto(bootEntry, 16)
+        put16(bootEntry, 0, crc16(bootEntry.copyOfRange(2, 32)))
+        enc(bootEntry).copyInto(region, 0x20)
+        enc(container.copyOfRange(0, 16)).copyInto(region, 0xa0)
+        enc(container.copyOfRange(16, container.size)).copyInto(region, 0xb0)
+
+        val verification = com.workeffortwaste.protocol.BootloaderVerifier.identify(region)
+        check(verification.identity == "m-bootloader 1.2-22e2559" && verification.matchesPublishedRelease) {
+            "m-bootloader v1.2 did not verify in the simulated flash layout"
+        }
+        return BootloaderVerificationState(
+            showDialog = true,
+            sha256 = verification.sha256,
+            identity = verification.identity,
+            matchesPublishedRelease = verification.matchesPublishedRelease,
+            message = verification.message,
+        )
+    }
+
+    private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256")
+        .digest(bytes)
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun crc16(bytes: ByteArray): Int {
+        var crc = 0
+        for (byte in bytes) {
+            crc = crc xor ((byte.toInt() and 0xff) shl 8)
+            repeat(8) {
+                crc = if (crc and 0x8000 != 0) (crc shl 1) xor 0x1021 else crc shl 1
+                crc = crc and 0xffff
+            }
+        }
+        return crc
+    }
+
+    private fun enc(bytes: ByteArray): ByteArray {
+        var key = 0xffff
+        return ByteArray(bytes.size) { index ->
+            val value = bytes[index].toInt() xor (key and 0xff)
+            key = ((key shl 1) xor (if (key and 0x8000 != 0) 0x1021 else 0)) and 0xffff
+            value.toByte()
+        }
+    }
+
+    private fun put16(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value ushr 8).toByte()
+    }
+
+    private fun put32(bytes: ByteArray, offset: Int, value: Int) {
+        repeat(4) { bytes[offset + it] = (value ushr (8 * it)).toByte() }
+    }
+
+    private fun captureBootloaderVerificationVariants() {
+        setTheme(themes.first { it.fileName == "custom-green" })
+        val unrecognizedRegion = ByteArray(FlashRestore.PROTECTED_SIZE) { (it * 13 % 251).toByte() }
+        val variants = listOf(
+            "stock" to BootloaderVerificationState(
+                showDialog = true,
+                sha256 = com.workeffortwaste.protocol.BootloaderVerifier.STOCK_V15_SHA256,
+                matchesStockV15 = true,
+                message = "Stock v15 bootloader SHA-256 matches the verified official image.",
+            ),
+            "mbootloader-v1.2" to verifiedMbootloaderV12ScreenshotState(),
+            "unrecognized" to BootloaderVerificationState(
+                showDialog = true,
+                sha256 = sha256(unrecognizedRegion),
+                message = "Unrecognized bootloader. It may be custom, corrupted, or another stock version.",
+            ),
+        )
+        variants.forEach { (name, state) ->
+            capture("custom-green-bootloader-$name", connected, configure = { activity ->
+                setBootloaderVerification(activity, state)
+            }) {
+                compose.waitUntil(10_000) {
+                    compose.onAllNodesWithText("Protected region SHA-256")
+                        .fetchSemanticsNodes().isNotEmpty()
+                }
+                compose.mainClock.advanceTimeBy(1000)
+                SystemClock.sleep(600)
+                instrumentation.waitForIdleSync()
+            }
+        }
+    }
+
     @Test
     fun captureEveryTheme() {
         seed(shortLibrary)
@@ -279,6 +403,13 @@ class ScreenshotCapture {
                 compose.onNodeWithContentDescription("More options").performClick()
                 compose.onNodeWithText("Settings").performClick()
             }
+            seed(emptyList(), includePinnedFactory = false)
+            capture("${theme.fileName}-empty", connected) {
+                compose.onNodeWithText("Already started flashing custom firmware?").assertIsDisplayed()
+            }
+            seed(shortLibrary)
         }
+        captureLatestReleaseNotes()
+        captureBootloaderVerificationVariants()
     }
 }

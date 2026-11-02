@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.edit
 import com.workeffortwaste.protocol.BotTransport
+import com.workeffortwaste.protocol.BootloaderVerifier
 import com.workeffortwaste.protocol.Fm1Protocol
 import com.workeffortwaste.protocol.Fm1Identity
 import com.workeffortwaste.protocol.FlashBackup
@@ -83,6 +84,17 @@ data class V15RecoveryState(
     val phase: String = "",
     val message: String = "",
     val completed: Boolean = false,
+)
+
+data class BootloaderVerificationState(
+    val showDialog: Boolean = false,
+    val working: Boolean = false,
+    val bytesRead: Int = 0,
+    val sha256: String = "",
+    val matchesStockV15: Boolean? = null,
+    val identity: String? = null,
+    val matchesPublishedRelease: Boolean = false,
+    val message: String = "",
 )
 
 internal fun String.withTerminalPeriod(): String = when {
@@ -250,6 +262,8 @@ class BackupModel(
         private set
     var firmwareExportState by mutableStateOf(FirmwareExportState())
         private set
+    var bootloaderVerificationState by mutableStateOf(BootloaderVerificationState())
+        private set
 
     /** Delivers worker results to Compose and serializes them with activity/broadcast callbacks. */
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -394,6 +408,61 @@ class BackupModel(
         return "Supported MIDI IDs: ${com.workeffortwaste.protocol.Fm1BootloaderMidi.SUPPORTED_USB_IDS}" +
                 "; interface 1/3\n\n$usb\n\n$midi\n\nConnection trace:\n" +
                 state.connectionDiagnostics.ifEmpty { "No connection attempt recorded." }
+    }
+
+    fun dismissBootloaderVerification() {
+        if (!bootloaderVerificationState.working) {
+            bootloaderVerificationState = BootloaderVerificationState()
+        }
+    }
+
+    /** Reads and hashes the protected 16 KiB bootloader region without modifying flash. */
+    fun verifyBootloader() {
+        if (!state.ready || state.busy || bootloaderVerificationState.working) return
+        cancelled.set(false)
+        bootloaderVerificationState = BootloaderVerificationState(showDialog = true, working = true)
+        state = state.copy(busy = true)
+        worker.execute {
+            try {
+                val activeProtocol = protocol ?: throw ProtocolException("Connect to the FM-1 first")
+                val result = BootloaderVerifier.read(activeProtocol::readFlash, ::checkCancelled) { bytesRead ->
+                    mainHandler.post {
+                        bootloaderVerificationState = bootloaderVerificationState.copy(bytesRead = bytesRead)
+                    }
+                }
+                mainHandler.post {
+                    state = state.copy(busy = false)
+                    bootloaderVerificationState = bootloaderVerificationState.copy(
+                        working = false,
+                        sha256 = result.sha256,
+                        matchesStockV15 = result.matchesStockV15,
+                        identity = result.identity,
+                        matchesPublishedRelease = result.matchesPublishedRelease,
+                        message = result.message,
+                    )
+                }
+            } catch (failure: Exception) {
+                val wasCancelled = failure is CancellationException
+                if (!wasCancelled) {
+                    try {
+                        closeSession()
+                    } catch (closeFailure: Exception) {
+                        Log.w("BackupModel", "Could not close bootloader verification session", closeFailure)
+                    }
+                }
+                mainHandler.post {
+                    state = state.copy(
+                        busy = false,
+                        ready = wasCancelled && state.ready,
+                    )
+                    bootloaderVerificationState = bootloaderVerificationState.copy(
+                        working = false,
+                        message = if (wasCancelled) "Verification cancelled. No flash was changed."
+                        else "Could not verify the bootloader: ${failure.message ?: failure.javaClass.simpleName}",
+                    )
+                }
+            }
+        }
     }
 
     /** Refreshes candidates without guessing which device to use when several match. */

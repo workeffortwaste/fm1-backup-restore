@@ -1138,6 +1138,7 @@ class MainActivity : ComponentActivity() {
     ) {
         val state = model.state
         val v15RecoveryState = model.v15RecoveryState
+        val bootloaderVerificationState = model.bootloaderVerificationState
         val firmwareExportState = model.firmwareExportState
         LaunchedEffect(state.autoConnectPending, state.device, state.busy, updater.installerOpen) {
             if (state.autoConnectPending && state.device != null && !updater.installerOpen) {
@@ -1184,23 +1185,43 @@ class MainActivity : ComponentActivity() {
         usbDiagnostics?.let { details ->
             AlertDialog(
                 onDismissRequest = { usbDiagnostics = null },
-                title = { Text("USB diagnostics") },
+                title = { Text("Diagnostics") },
                 text = {
                     SelectionContainer {
                         Text(details, modifier = Modifier.verticalScroll(rememberScrollState()))
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = { onButtonClick { usbDiagnostics = null } }) { Text("Close") }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            getSystemService(ClipboardManager::class.java)
-                                .setPrimaryClip(ClipData.newPlainText("USB diagnostics", details))
-                        },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) { Text("Copy") }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        TextButton(
+                            onClick = {
+                                onButtonClick {
+                                    usbDiagnostics = null
+                                    model.verifyBootloader()
+                                }
+                            },
+                            enabled = state.ready && !state.busy && !v15RecoveryState.working &&
+                                    !firmwareExportState.showDialog && !bootloaderVerificationState.showDialog,
+                            contentPadding = PaddingValues(horizontal = 4.dp),
+                        ) { Text("Verify bootloader") }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(
+                                onClick = {
+                                    getSystemService(ClipboardManager::class.java)
+                                        .setPrimaryClip(ClipData.newPlainText("Diagnostics", details))
+                                },
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                            ) { Text("Copy") }
+                            TextButton(
+                                onClick = { onButtonClick { usbDiagnostics = null } },
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                            ) { Text("Close") }
+                        }
+                    }
                 },
             )
         }
@@ -1418,6 +1439,10 @@ class MainActivity : ComponentActivity() {
             onDismiss = model::dismissV15RecoveryDialog,
             onCreate = model::createV15RecoveryBackup,
         )
+        BootloaderVerificationDialog(
+            state = bootloaderVerificationState,
+            onDismiss = model::dismissBootloaderVerification,
+        )
         FirmwareExportDialog(
             state = firmwareExportState,
             exportEnabled = !choosingFile && !state.busy,
@@ -1618,7 +1643,7 @@ class MainActivity : ComponentActivity() {
                                         },
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("USB diagnostics") },
+                                        text = { Text("Diagnostics") },
                                         shape = MenuDefaults.trailingItemShape,
                                         onClick = {
                                             showAppMenu = false
@@ -1655,8 +1680,9 @@ class MainActivity : ComponentActivity() {
                         val connectionFailed = state.status.heading.startsWith("Connection failed") ||
                                 state.status.heading.startsWith("Bootloader request failed") ||
                                 state.status.heading.startsWith("Restore verification failed")
+                        val showingBootloaderVerification = bootloaderVerificationState.working
                         val statusIcon = if (connectionFailed) R.drawable.ic_error
-                        else if (discoveringDevice || state.busy) R.drawable.ic_usb
+                        else if (discoveringDevice || state.busy && !showingBootloaderVerification) R.drawable.ic_usb
                         else R.drawable.ic_info
                         val statusPresentation = when {
                             state.status.isNotEmpty -> state.status
@@ -1671,7 +1697,8 @@ class MainActivity : ComponentActivity() {
                                 iconResource = statusIcon,
                                 isError = connectionFailed,
                                 progressDescription = state.deviceStatus.takeIf {
-                                    !connectionFailed && (discoveringDevice || state.busy)
+                                    !connectionFailed &&
+                                            (discoveringDevice || state.busy && !showingBootloaderVerification)
                                 },
                             )
                         }
