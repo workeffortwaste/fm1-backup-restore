@@ -1,6 +1,13 @@
 package com.workeffortwaste
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -31,6 +38,37 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+
+@Composable
+internal fun TransferScreenTransition(
+    state: BackupState,
+    titleColor: Color = MaterialTheme.colorScheme.primary,
+    content: @Composable () -> Unit,
+) {
+    AnimatedContent(
+        targetState = state,
+        contentKey = { it.showTransferProgress },
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer),
+        transitionSpec = {
+            fadeIn(tween(250)) togetherWith fadeOut(tween(250))
+        },
+        label = "Transfer screen",
+    ) { screenState ->
+        Box(Modifier.fillMaxSize()) {
+            if (screenState.showTransferProgress) {
+                // AnimatedContent retains this snapshot while the completed transfer fades out.
+                TransferProgressScreen(
+                    operation = requireNotNull(screenState.transfer),
+                    status = screenState.status,
+                    progress = if (screenState.progressKnown) screenState.progress else null,
+                    titleColor = titleColor,
+                )
+            } else {
+                content()
+            }
+        }
+    }
+}
 
 @Composable
 internal fun TransferProgressScreen(

@@ -1182,49 +1182,6 @@ class MainActivity : ComponentActivity() {
             model.dismissTransferResult()
             action()
         }
-        usbDiagnostics?.let { details ->
-            AlertDialog(
-                onDismissRequest = { usbDiagnostics = null },
-                title = { Text("Diagnostics") },
-                text = {
-                    SelectionContainer {
-                        Text(details, modifier = Modifier.verticalScroll(rememberScrollState()))
-                    }
-                },
-                confirmButton = {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        TextButton(
-                            onClick = {
-                                onButtonClick {
-                                    usbDiagnostics = null
-                                    model.verifyBootloader()
-                                }
-                            },
-                            enabled = state.ready && !state.busy && !v15RecoveryState.working &&
-                                    !firmwareExportState.showDialog && !bootloaderVerificationState.showDialog,
-                            contentPadding = PaddingValues(horizontal = 4.dp),
-                        ) { Text("Verify bootloader") }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = {
-                                    getSystemService(ClipboardManager::class.java)
-                                        .setPrimaryClip(ClipData.newPlainText("Diagnostics", details))
-                                },
-                                contentPadding = PaddingValues(horizontal = 4.dp),
-                            ) { Text("Copy") }
-                            TextButton(
-                                onClick = { onButtonClick { usbDiagnostics = null } },
-                                contentPadding = PaddingValues(horizontal = 4.dp),
-                            ) { Text("Close") }
-                        }
-                    }
-                },
-            )
-        }
         val listState = rememberLazyListState()
         val overscrollEffect = rememberOverscrollEffect()
         val topBarState = rememberTopAppBarState()
@@ -1441,7 +1398,26 @@ class MainActivity : ComponentActivity() {
         )
         BootloaderVerificationDialog(
             state = bootloaderVerificationState,
-            onDismiss = model::dismissBootloaderVerification,
+            onDismiss = {
+                if (bootloaderVerificationState.showDialog) {
+                    model.dismissBootloaderVerification()
+                } else {
+                    onButtonClick { usbDiagnostics = null }
+                }
+            },
+            diagnostics = usbDiagnostics,
+            verifyEnabled = state.ready && !state.busy && !v15RecoveryState.working &&
+                    !firmwareExportState.showDialog && !bootloaderVerificationState.showDialog,
+            onVerify = {
+                onButtonClick {
+                    model.verifyBootloader()
+                    usbDiagnostics = null
+                }
+            },
+            onCopyDiagnostics = { details ->
+                getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("Diagnostics", details))
+            },
         )
         FirmwareExportDialog(
             state = firmwareExportState,
@@ -1453,374 +1429,367 @@ class MainActivity : ComponentActivity() {
                 zipPicker.launch("fm1-backups-${java.time.LocalDate.now()}.zip")
             },
         )
-        if (state.showTransferProgress) {
-            TransferProgressScreen(
-                operation = requireNotNull(state.transfer),
-                status = state.status,
-                progress = if (state.progressKnown) state.progress else null,
-                titleColor = titleColor,
-            )
-            return
-        }
-        Scaffold(
-            modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
-            contentWindowInsets = WindowInsets.safeDrawing,
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-            floatingActionButton = {
-                if (operationEligible && pickerAvailable) {
-                    ExtendedFloatingActionButton(
-                        onClick = { onButtonClick(model::backup) },
-                        icon = {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_save),
-                                contentDescription = null,
+        TransferScreenTransition(state = state, titleColor = titleColor) {
+            Scaffold(
+                modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+                contentWindowInsets = WindowInsets.safeDrawing,
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                floatingActionButton = {
+                    if (operationEligible && pickerAvailable) {
+                        ExtendedFloatingActionButton(
+                            onClick = { onButtonClick(model::backup) },
+                            icon = {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_save),
+                                    contentDescription = null,
+                                )
+                            },
+                            text = { Text("Backup FM-1") },
+                        )
+                    }
+                },
+                topBar = {
+                    TwoRowsTopAppBar(
+                        title = { expanded ->
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_launcher_wave),
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(if (expanded) 48.dp else 40.dp),
+                                )
+                                if (expanded) {
+                                    Text(
+                                        "FM-1 Backup & Restore",
+                                        textAlign = TextAlign.Center,
+                                        color = titleColor,
+                                    )
+                                }
+                            }
+                        },
+                        titleHorizontalAlignment = Alignment.CenterHorizontally,
+                        expandedHeight = 140.dp,
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                            scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
+                            titleContentColor = titleColor,
+                            navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                        subtitle = { expanded ->
+                            if (expanded) Text(
+                                if (noDevice || !batteryExempt || !state.discoveryActive) ""
+                                else currentDeviceStatus ?: retainedDeviceStatus,
+                                minLines = 1,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
+                                    .semantics { liveRegion = LiveRegionMode.Polite },
                             )
                         },
-                        text = { Text("Backup FM-1") },
-                    )
-                }
-            },
-            topBar = {
-                TwoRowsTopAppBar(
-                    title = { expanded ->
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_launcher_wave),
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(if (expanded) 48.dp else 40.dp),
-                            )
-                            if (expanded) {
-                                Text(
-                                    "FM-1 Backup & Restore",
-                                    textAlign = TextAlign.Center,
-                                    color = titleColor,
-                                )
+                        navigationIcon = {
+                            Box {
+                                IconButton(
+                                    onClick = { showSupportMenu = true },
+                                    enabled = !state.busy,
+                                    colors = IconButtonDefaults.iconButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    ),
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_coffee),
+                                        contentDescription = "Support this project",
+                                    )
+                                }
+                                DropdownMenuPopup(
+                                    expanded = showSupportMenu && !state.busy,
+                                    onDismissRequest = { showSupportMenu = false },
+                                ) {
+                                    DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
+                                        DropdownMenuItem(
+                                            text = { Text("GitHub Sponsors") },
+                                            shape = MenuDefaults.leadingItemShape,
+                                            onClick = {
+                                                showSupportMenu = false
+                                                openSupportPage("https://github.com/sponsors/workeffortwaste")
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Ko-fi") },
+                                            shape = MenuDefaults.trailingItemShape,
+                                            onClick = {
+                                                showSupportMenu = false
+                                                openSupportPage("https://ko-fi.com/defaced")
+                                            },
+                                        )
+                                    }
+                                }
                             }
-                        }
-                    },
-                    titleHorizontalAlignment = Alignment.CenterHorizontally,
-                    expandedHeight = 140.dp,
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        titleContentColor = titleColor,
-                        navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    ),
-                    subtitle = { expanded ->
-                        if (expanded) Text(
-                            if (noDevice || !batteryExempt || !state.discoveryActive) ""
-                            else currentDeviceStatus ?: retainedDeviceStatus,
-                            minLines = 1,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp)
-                                .semantics { liveRegion = LiveRegionMode.Polite },
-                        )
-                    },
-                    navigationIcon = {
-                        Box {
+                        },
+                        actions = {
                             IconButton(
-                                onClick = { showSupportMenu = true },
-                                enabled = !state.busy,
-                                colors = IconButtonDefaults.iconButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                ),
-                            ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_coffee),
-                                    contentDescription = "Support this project",
-                                )
-                            }
-                            DropdownMenuPopup(
-                                expanded = showSupportMenu && !state.busy,
-                                onDismissRequest = { showSupportMenu = false },
-                            ) {
-                                DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
-                                    DropdownMenuItem(
-                                        text = { Text("GitHub Sponsors") },
-                                        shape = MenuDefaults.leadingItemShape,
-                                        onClick = {
-                                            showSupportMenu = false
-                                            openSupportPage("https://github.com/sponsors/workeffortwaste")
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Ko-fi") },
-                                        shape = MenuDefaults.trailingItemShape,
-                                        onClick = {
-                                            showSupportMenu = false
-                                            openSupportPage("https://ko-fi.com/defaced")
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    actions = {
-                        IconButton(
-                            onClick = {
-                                onButtonClick {
-                                    if (state.ready) model.disconnect() else model.refreshDevice()
-                                }
-                            },
-                            enabled = editable && batteryExempt,
-                            colors = IconButtonDefaults.iconButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            ),
-                        ) {
-                            Icon(
-                                painter = painterResource(
-                                    if (state.ready) R.drawable.ic_eject else R.drawable.ic_refresh,
-                                ),
-                                contentDescription = if (state.ready) "Disconnect FM-1" else "Refresh",
-                            )
-                        }
-                        Box {
-                            IconButton(
-                                onClick = { showAppMenu = true },
-                                enabled = editable,
-                                colors = IconButtonDefaults.iconButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                                ),
-                            ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_more_vert),
-                                    contentDescription = "More options",
-                                )
-                            }
-                            DropdownMenuPopup(
-                                expanded = showAppMenu && editable,
-                                onDismissRequest = { showAppMenu = false },
-                            ) {
-                                DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
-                                    DropdownMenuItem(
-                                        text = { Text("Import from file") },
-                                        shape = MenuDefaults.leadingItemShape,
-                                        enabled = editable && batteryExempt,
-                                        onClick = {
-                                            showAppMenu = false
-                                            choosingFile = true
-                                            importPicker.launch(
-                                                arrayOf(
-                                                    "application/octet-stream",
-                                                    "application/x-binary",
-                                                    "*/*"
-                                                )
-                                            )
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Export all backups") },
-                                        shape = MenuDefaults.middleItemShape,
-                                        enabled = editable && state.backups.isNotEmpty(),
-                                        onClick = {
-                                            showAppMenu = false
-                                            onButtonClick(model::showFirmwareExportDialog)
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Create recovery snapshot") },
-                                        shape = MenuDefaults.middleItemShape,
-                                        enabled = editable && batteryExempt,
-                                        onClick = {
-                                            showAppMenu = false
-                                            model.showV15RecoveryDialog()
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Settings") },
-                                        shape = MenuDefaults.middleItemShape,
-                                        onClick = {
-                                            showAppMenu = false
-                                            onSettings()
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Diagnostics") },
-                                        shape = MenuDefaults.trailingItemShape,
-                                        onClick = {
-                                            showAppMenu = false
-                                            usbDiagnostics = model.discoveryDiagnostics()
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    scrollBehavior = headerScrollBehavior,
-                )
-            },
-        ) { contentPadding ->
-            LazyColumn(
-                state = listState,
-                userScrollEnabled = libraryOverflows,
-                overscrollEffect = if (libraryOverflows) overscrollEffect else null,
-                modifier = Modifier.fillMaxSize().padding(contentPadding)
-                    .consumeWindowInsets(contentPadding).imePadding()
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
-                contentPadding = PaddingValues(bottom = 112.dp),
-            ) {
-                item {
-                    Column(
-                        modifier = Modifier.padding(
-                            top = 24.dp,
-                            bottom = 24.dp - ListItemDefaults.SegmentedGap,
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(16.dp),
-                    ) {
-                        val showStatus = discoveringDevice || noDevice || state.status.isNotEmpty
-                        val connectionFailed = state.status.heading.startsWith("Connection failed") ||
-                                state.status.heading.startsWith("Bootloader request failed") ||
-                                state.status.heading.startsWith("Restore verification failed")
-                        val showingBootloaderVerification = bootloaderVerificationState.working
-                        val statusIcon = if (connectionFailed) R.drawable.ic_error
-                        else if (discoveringDevice || state.busy && !showingBootloaderVerification) R.drawable.ic_usb
-                        else R.drawable.ic_info
-                        val statusPresentation = when {
-                            state.status.isNotEmpty -> state.status
-                            noDevice -> discoveryStatusMessage(noDevice = true)
-                            discoveringDevice -> discoveryStatusMessage(noDevice = false)
-                            else -> StatusMessage(state.deviceStatus, "")
-                        }
-
-                        if (showStatus) {
-                            StatusMessageCard(
-                                message = statusPresentation,
-                                iconResource = statusIcon,
-                                isError = connectionFailed,
-                                progressDescription = state.deviceStatus.takeIf {
-                                    !connectionFailed &&
-                                            (discoveringDevice || state.busy && !showingBootloaderVerification)
+                                onClick = {
+                                    onButtonClick {
+                                        if (state.ready) model.disconnect() else model.refreshDevice()
+                                    }
                                 },
-                            )
-                        }
-                        if (state.restoreRetryAvailable && !state.busy) {
-                            OutlinedButton(
-                                onClick = { onButtonClick(model::retryRestore) },
-                                shapes = ButtonDefaults.shapes(),
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                            ) { Text("Retry restore") }
-                        }
-                        val connectingToDevice = state.busy && (
-                                state.findingBootloader ||
-                                        state.status.heading.startsWith("Reading FM-1 firmware identity") ||
-                                        state.status.heading.startsWith("Waiting for USB permission") ||
-                                        state.status.heading.startsWith("Waiting for FM-1") ||
-                                        state.status.heading.startsWith("Connecting to FM-1")
+                                enabled = editable && batteryExempt,
+                                colors = IconButtonDefaults.iconButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                            ) {
+                                Icon(
+                                    painter = painterResource(
+                                        if (state.ready) R.drawable.ic_eject else R.drawable.ic_refresh,
+                                    ),
+                                    contentDescription = if (state.ready) "Disconnect FM-1" else "Refresh",
                                 )
-                        if (!state.busy && !state.restoreRetryAvailable &&
-                            (state.deviceMode == DeviceMode.MIDI || (state.device != null && !state.ready))
-                        ) {
-                            ConnectionSection(
-                                state,
-                                editable,
-                                onEnterBootloader = { onButtonClick(model::enterBootloader) },
-                                onConnect = { onButtonClick(onConnect) },
-                            )
-                        }
-                        if (!batteryExempt) {
-                            Button(
-                                onClick = { onButtonClick(onSettings) },
-                                enabled = editable,
-                                shapes = ButtonDefaults.shapes(),
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                            ) { Text("Settings") }
-                        }
-                        if (state.busy && !state.readingFirmwareIdentity && !connectingToDevice) {
-                            OutlinedButton(
-                                onClick = { onButtonClick(model::cancel) },
-                                shapes = ButtonDefaults.shapes(),
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                            ) { Text("Cancel operation") }
-                        }
-                    }
-                }
-                item {
-                    if (state.pinnedBackups.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.padding(bottom = 8.dp - ListItemDefaults.SegmentedGap),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            SectionHeading("Pinned")
-                        }
-                    }
-                }
-                itemsIndexed(state.pinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
-                    BackupEntryRow(
-                        entry = entry,
-                        index = index,
-                        count = state.pinnedBackups.size,
-                        pinned = true,
-                        darkTheme = darkTheme,
-                        actionsOpen = backupActions == entry.id,
-                        enabled = editable,
-                        operationEligible = operationEligible,
-                        pickerAvailable = pickerAvailable,
-                        onOpenActions = { backupActions = entry.id },
-                        onDismissActions = { backupActions = null },
-                        onAction = { action, selected -> handleBackupAction(action, selected) },
+                            }
+                            Box {
+                                IconButton(
+                                    onClick = { showAppMenu = true },
+                                    enabled = editable,
+                                    colors = IconButtonDefaults.iconButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    ),
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_more_vert),
+                                        contentDescription = "More options",
+                                    )
+                                }
+                                DropdownMenuPopup(
+                                    expanded = showAppMenu && editable,
+                                    onDismissRequest = { showAppMenu = false },
+                                ) {
+                                    DropdownMenuGroup(shapes = MenuDefaults.groupShape(0, 1)) {
+                                        DropdownMenuItem(
+                                            text = { Text("Import from file") },
+                                            shape = MenuDefaults.leadingItemShape,
+                                            enabled = editable && batteryExempt,
+                                            onClick = {
+                                                showAppMenu = false
+                                                choosingFile = true
+                                                importPicker.launch(
+                                                    arrayOf(
+                                                        "application/octet-stream",
+                                                        "application/x-binary",
+                                                        "*/*"
+                                                    )
+                                                )
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Export all backups") },
+                                            shape = MenuDefaults.middleItemShape,
+                                            enabled = editable && state.backups.isNotEmpty(),
+                                            onClick = {
+                                                showAppMenu = false
+                                                onButtonClick(model::showFirmwareExportDialog)
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Create recovery snapshot") },
+                                            shape = MenuDefaults.middleItemShape,
+                                            enabled = editable && batteryExempt,
+                                            onClick = {
+                                                showAppMenu = false
+                                                model.showV15RecoveryDialog()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Settings") },
+                                            shape = MenuDefaults.middleItemShape,
+                                            onClick = {
+                                                showAppMenu = false
+                                                onSettings()
+                                            },
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Diagnostics") },
+                                            shape = MenuDefaults.trailingItemShape,
+                                            onClick = {
+                                                showAppMenu = false
+                                                usbDiagnostics = model.discoveryDiagnostics()
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        scrollBehavior = headerScrollBehavior,
                     )
-                }
-                if (state.unpinnedBackups.isNotEmpty() || state.backups.isEmpty() ||
-                    state.libraryLoading || state.libraryError.isNotEmpty()
+                },
+            ) { contentPadding ->
+                LazyColumn(
+                    state = listState,
+                    userScrollEnabled = libraryOverflows,
+                    overscrollEffect = if (libraryOverflows) overscrollEffect else null,
+                    modifier = Modifier.fillMaxSize().padding(contentPadding)
+                        .consumeWindowInsets(contentPadding).imePadding()
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap),
+                    contentPadding = PaddingValues(bottom = 112.dp),
                 ) {
                     item {
                         Column(
                             modifier = Modifier.padding(
-                                top = if (state.pinnedBackups.isEmpty()) 0.dp
-                                else 24.dp - ListItemDefaults.SegmentedGap,
-                                bottom = if (state.backups.isEmpty()) 0.dp else 8.dp - ListItemDefaults.SegmentedGap,
+                                top = 24.dp,
+                                bottom = 24.dp - ListItemDefaults.SegmentedGap,
                             ),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
                         ) {
-                            SectionHeading("Backups")
-                            if (state.libraryLoading) Text("Loading verified backups…")
-                            if (state.libraryError.isNotEmpty()) Text(state.libraryError)
-                            if (!state.libraryLoading && state.libraryError.isEmpty() && state.backups.isEmpty()) {
-                                InfoBox {
-                                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Text(
-                                                "Already started flashing custom firmware?",
-                                                style = MaterialTheme.typography.titleSmall,
-                                            )
-                                            InfoBoxDetail("Generate a stock v15 snapshot even if you didn't save a backup first.")
+                            val showStatus = discoveringDevice || noDevice || state.status.isNotEmpty
+                            val connectionFailed = state.status.heading.startsWith("Connection failed") ||
+                                    state.status.heading.startsWith("Bootloader request failed") ||
+                                    state.status.heading.startsWith("Restore verification failed")
+                            val showingBootloaderVerification = bootloaderVerificationState.working
+                            val statusIcon = if (connectionFailed) R.drawable.ic_error
+                            else if (discoveringDevice || state.busy && !showingBootloaderVerification) R.drawable.ic_usb
+                            else R.drawable.ic_info
+                            val statusPresentation = when {
+                                state.status.isNotEmpty -> state.status
+                                noDevice -> discoveryStatusMessage(noDevice = true)
+                                discoveringDevice -> discoveryStatusMessage(noDevice = false)
+                                else -> StatusMessage(state.deviceStatus, "")
+                            }
+
+                            if (showStatus) {
+                                StatusMessageCard(
+                                    message = statusPresentation,
+                                    iconResource = statusIcon,
+                                    isError = connectionFailed,
+                                    progressDescription = state.deviceStatus.takeIf {
+                                        !connectionFailed &&
+                                                (discoveringDevice || state.busy && !showingBootloaderVerification)
+                                    },
+                                )
+                            }
+                            if (state.restoreRetryAvailable && !state.busy) {
+                                OutlinedButton(
+                                    onClick = { onButtonClick(model::retryRestore) },
+                                    shapes = ButtonDefaults.shapes(),
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                ) { Text("Retry restore") }
+                            }
+                            val connectingToDevice = state.busy && (
+                                    state.findingBootloader ||
+                                            state.status.heading.startsWith("Reading FM-1 firmware identity") ||
+                                            state.status.heading.startsWith("Waiting for USB permission") ||
+                                            state.status.heading.startsWith("Waiting for FM-1") ||
+                                            state.status.heading.startsWith("Connecting to FM-1")
+                                    )
+                            if (!state.busy && !state.restoreRetryAvailable &&
+                                (state.deviceMode == DeviceMode.MIDI || (state.device != null && !state.ready))
+                            ) {
+                                ConnectionSection(
+                                    state,
+                                    editable,
+                                    onEnterBootloader = { onButtonClick(model::enterBootloader) },
+                                    onConnect = { onButtonClick(onConnect) },
+                                )
+                            }
+                            if (!batteryExempt) {
+                                Button(
+                                    onClick = { onButtonClick(onSettings) },
+                                    enabled = editable,
+                                    shapes = ButtonDefaults.shapes(),
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                ) { Text("Settings") }
+                            }
+                            if (state.busy && !state.readingFirmwareIdentity && !connectingToDevice) {
+                                OutlinedButton(
+                                    onClick = { onButtonClick(model::cancel) },
+                                    shapes = ButtonDefaults.shapes(),
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                ) { Text("Cancel operation") }
+                            }
+                        }
+                    }
+                    item {
+                        if (state.pinnedBackups.isNotEmpty()) {
+                            Column(
+                                modifier = Modifier.padding(bottom = 8.dp - ListItemDefaults.SegmentedGap),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                SectionHeading("Pinned")
+                            }
+                        }
+                    }
+                    itemsIndexed(state.pinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
+                        BackupEntryRow(
+                            entry = entry,
+                            index = index,
+                            count = state.pinnedBackups.size,
+                            pinned = true,
+                            darkTheme = darkTheme,
+                            actionsOpen = backupActions == entry.id,
+                            enabled = editable,
+                            operationEligible = operationEligible,
+                            pickerAvailable = pickerAvailable,
+                            onOpenActions = { backupActions = entry.id },
+                            onDismissActions = { backupActions = null },
+                            onAction = { action, selected -> handleBackupAction(action, selected) },
+                        )
+                    }
+                    if (state.unpinnedBackups.isNotEmpty() || state.backups.isEmpty() ||
+                        state.libraryLoading || state.libraryError.isNotEmpty()
+                    ) {
+                        item {
+                            Column(
+                                modifier = Modifier.padding(
+                                    top = if (state.pinnedBackups.isEmpty()) 0.dp
+                                    else 24.dp - ListItemDefaults.SegmentedGap,
+                                    bottom = if (state.backups.isEmpty()) 0.dp else 8.dp - ListItemDefaults.SegmentedGap,
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                SectionHeading("Backups")
+                                if (state.libraryLoading) Text("Loading verified backups…")
+                                if (state.libraryError.isNotEmpty()) Text(state.libraryError)
+                                if (!state.libraryLoading && state.libraryError.isEmpty() && state.backups.isEmpty()) {
+                                    InfoBox {
+                                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Text(
+                                                    "Already started flashing custom firmware?",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                )
+                                                InfoBoxDetail("Generate a stock v15 snapshot even if you didn't save a backup first.")
+                                            }
+                                            Button(
+                                                onClick = { onButtonClick(model::showV15RecoveryDialog) },
+                                                enabled = editable,
+                                                shapes = ButtonDefaults.shapes(),
+                                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                            ) { Text("Create v15 recovery snapshot") }
                                         }
-                                        Button(
-                                            onClick = { onButtonClick(model::showV15RecoveryDialog) },
-                                            enabled = editable,
-                                            shapes = ButtonDefaults.shapes(),
-                                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                                        ) { Text("Create v15 recovery snapshot") }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                itemsIndexed(state.unpinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
-                    BackupEntryRow(
-                        entry = entry,
-                        index = index,
-                        count = state.unpinnedBackups.size,
-                        pinned = false,
-                        darkTheme = darkTheme,
-                        actionsOpen = backupActions == entry.id,
-                        enabled = editable,
-                        operationEligible = operationEligible,
-                        pickerAvailable = pickerAvailable,
-                        onOpenActions = { backupActions = entry.id },
-                        onDismissActions = { backupActions = null },
-                        onAction = { action, selected -> handleBackupAction(action, selected) },
-                    )
+                    itemsIndexed(state.unpinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
+                        BackupEntryRow(
+                            entry = entry,
+                            index = index,
+                            count = state.unpinnedBackups.size,
+                            pinned = false,
+                            darkTheme = darkTheme,
+                            actionsOpen = backupActions == entry.id,
+                            enabled = editable,
+                            operationEligible = operationEligible,
+                            pickerAvailable = pickerAvailable,
+                            onOpenActions = { backupActions = entry.id },
+                            onDismissActions = { backupActions = null },
+                            onAction = { action, selected -> handleBackupAction(action, selected) },
+                        )
+                    }
                 }
             }
         }
