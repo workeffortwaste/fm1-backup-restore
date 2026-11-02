@@ -127,16 +127,18 @@ internal fun TransferProgressScreen(
                     trackColor = trackColor,
                 )
             } else {
-                CircularWavyProgressIndicator(
-                    progress = { animatedProgress },
-                    modifier = indicatorModifier,
-                    trackColor = trackColor,
-                )
-                Text(
-                    "${transferProgressPercent(animatedProgress, progress)}%",
-                    style = MaterialTheme.typography.titleLarge,
-                    textAlign = TextAlign.Center,
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    CircularWavyProgressIndicator(
+                        progress = { animatedProgress },
+                        modifier = indicatorModifier,
+                        trackColor = trackColor,
+                    )
+                    Text(
+                        "${transferProgressPercent(animatedProgress, progress)}%",
+                        style = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
 
             Text(
