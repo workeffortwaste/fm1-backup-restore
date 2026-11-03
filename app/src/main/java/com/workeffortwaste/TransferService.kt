@@ -77,7 +77,10 @@ class TransferService : Service() {
     private fun completeTransfer(outcome: TransferOutcome) {
         val name = operation
         try {
-            if (name != null && outcome != TransferOutcome.CANCELLED) {
+            // Emergency recovery reports only in its modal, not via the unrelated main-screen status.
+            if (name != null && outcome != TransferOutcome.CANCELLED &&
+                model.bootloaderVerificationState.recovery == null
+            ) {
                 val state = model.state
                 val summary = state.status.asNotificationText() +
                         if (state.hash.isNotEmpty()) "\n${state.hashLabel}: ${state.hash}" else ""

@@ -41,7 +41,7 @@ data class FlashInfo(val type: Int, val id: Long) {
         }
 }
 
-/** FM1/WL82 commands with an independent, fixed protected boundary on every flash mutation. */
+/** FM1/WL82 commands; normal restore and emergency boot repair have separate fixed write boundaries. */
 class Fm1Protocol(private val transport: ScsiTransport) {
     /** Rejects other chip families and unsupported download modes before loader upload is allowed. */
     fun identify(): Fm1Identity {
@@ -119,6 +119,17 @@ class Fm1Protocol(private val transport: ScsiTransport) {
                     (FlashRestore.FLASH_SIZE - FlashRestore.SECTOR_SIZE).toLong()
         )
         require(address % FlashRestore.SECTOR_SIZE == 0L)
+        eraseAt(address)
+    }
+
+    /** Emergency-only sector erase; cannot cross into application flash or relax normal restore limits. */
+    internal fun eraseBootloaderSector(address: Long) {
+        require(address in 0L..(FlashRestore.PROTECTED_SIZE - FlashRestore.SECTOR_SIZE).toLong())
+        require(address % FlashRestore.SECTOR_SIZE == 0L)
+        eraseAt(address)
+    }
+
+    private fun eraseAt(address: Long) {
         response(0xfb01, ByteBuffer.allocate(4).putInt(address.toInt()).array())
     }
 
@@ -133,6 +144,18 @@ class Fm1Protocol(private val transport: ScsiTransport) {
                     (FlashRestore.FLASH_SIZE - bytes.size).toLong()
         )
         require(address % FlashRestore.PAGE_SIZE + bytes.size <= FlashRestore.PAGE_SIZE)
+        programAt(address, bytes)
+    }
+
+    /** Emergency-only programming; both boot-area and page boundaries remain mandatory. */
+    internal fun writeBootloaderPage(address: Long, bytes: ByteArray) {
+        require(bytes.size in 1..FlashRestore.PAGE_SIZE)
+        require(address in 0L..(FlashRestore.PROTECTED_SIZE - bytes.size).toLong())
+        require(address % FlashRestore.PAGE_SIZE + bytes.size <= FlashRestore.PAGE_SIZE)
+        programAt(address, bytes)
+    }
+
+    private fun programAt(address: Long, bytes: ByteArray) {
         val crc = crc16(bytes)
         val arguments = addressLength(address, bytes.size) +
                 byteArrayOf(0, crc.toByte(), (crc shr 8).toByte())

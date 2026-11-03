@@ -1398,6 +1398,9 @@ class MainActivity : ComponentActivity() {
         )
         BootloaderVerificationDialog(
             state = bootloaderVerificationState,
+            recoveryConnected = model.emergencyRecoveryConnected,
+            onEmergencyRecovery = model::prepareEmergencyRecovery,
+            onProceedRecovery = model::restoreEmergencyBootloader,
             onDismiss = {
                 if (bootloaderVerificationState.showDialog) {
                     model.dismissBootloaderVerification()
@@ -1704,7 +1707,9 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                                 ) { Text("Settings") }
                             }
-                            if (state.busy && !state.readingFirmwareIdentity && !connectingToDevice) {
+                            if (state.busy && !state.readingFirmwareIdentity && !connectingToDevice &&
+                                !bootloaderVerificationState.showDialog
+                            ) {
                                 OutlinedButton(
                                     onClick = { onButtonClick(model::cancel) },
                                     shapes = ButtonDefaults.shapes(),

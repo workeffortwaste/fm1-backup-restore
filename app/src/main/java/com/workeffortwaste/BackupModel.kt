@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.edit
 import com.workeffortwaste.protocol.BotTransport
 import com.workeffortwaste.protocol.BootloaderVerifier
+import com.workeffortwaste.protocol.BootloaderRecovery
 import com.workeffortwaste.protocol.Fm1Protocol
 import com.workeffortwaste.protocol.Fm1Identity
 import com.workeffortwaste.protocol.FlashBackup
@@ -94,6 +95,25 @@ data class BootloaderVerificationState(
     val matchesStockV15: Boolean? = null,
     val identity: String? = null,
     val matchesPublishedRelease: Boolean = false,
+    val message: String = "",
+    val recovery: EmergencyRecoveryState? = null,
+) {
+    val hasKnownHash: Boolean
+        get() = matchesStockV15 == true || (identity != null && matchesPublishedRelease)
+    val canRecover: Boolean
+        get() = canRecover(debugOverride = false)
+
+    /** Debug bypasses only hash recognition; the caller must separately require the verified connection. */
+    fun canRecover(debugOverride: Boolean): Boolean =
+        sha256.isNotEmpty() && (!hasKnownHash || debugOverride) && !working
+}
+
+enum class EmergencyRecoveryStage { DOWNLOADING, CONFIRM, FLASHING, SUCCESS, FAILURE }
+
+data class EmergencyRecoveryState(
+    val stage: EmergencyRecoveryStage = EmergencyRecoveryStage.DOWNLOADING,
+    val phase: String = "Downloading stock bootloader",
+    val progress: Float? = 0f,
     val message: String = "",
 )
 
@@ -268,6 +288,7 @@ class BackupModel(
 
     /** Serializes MIDI, loader startup, transfers, and cleanup without concurrent USB commands. */
     private val worker = Executors.newSingleThreadExecutor()
+    private val recoveryDownloader = Executors.newSingleThreadExecutor()
 
     /** Main-thread cancellation flag checked by the worker between bounded I/O commands. */
     private val cancelled = AtomicBoolean()
@@ -298,6 +319,15 @@ class BackupModel(
     /** USB path of a loader this app started and verified; cleared whenever that device goes away. */
     @Volatile
     private var loaderDeviceName: String? = null
+    private var verifiedBootloaderDeviceName: String? = null
+    private var recoveryBootloader: ByteArray? = null
+
+    /** Confirmation belongs to one verified USB session; reconnecting requires fresh verification. */
+    val emergencyRecoveryConnected: Boolean
+        get() = state.ready && !state.busy && state.deviceMode == DeviceMode.DOWNLOAD &&
+                verifiedBootloaderDeviceName != null &&
+                state.device?.deviceName == verifiedBootloaderDeviceName &&
+                loaderDeviceName == verifiedBootloaderDeviceName
     private var discoveryTimerPending = false
     private val discoveryTimeout = Runnable {
         discoveryTimerPending = false
@@ -339,7 +369,9 @@ class BackupModel(
     /** Keeps an idle, probed loader session active; only read-only target info is requested. */
     private val keepAlive = object : Runnable {
         override fun run() {
-            if (state.ready && !state.busy) {
+            if (state.ready && (!state.busy ||
+                        bootloaderVerificationState.recovery?.stage == EmergencyRecoveryStage.DOWNLOADING)
+            ) {
                 worker.execute {
                     val active = protocol ?: return@execute
                     try {
@@ -352,9 +384,12 @@ class BackupModel(
                             Log.w("BackupModel", "Could not close failed idle session", closeFailure)
                         }
                         post { current ->
-                            if (current.busy) current else current.copy(
+                            if (current.busy &&
+                                bootloaderVerificationState.recovery?.stage != EmergencyRecoveryStage.DOWNLOADING
+                            ) current else current.copy(
                                 ready = false,
-                                status = statusMessage("Connection failed", "FM-1 stopped responding. Refresh"),
+                                status = if (bootloaderVerificationState.recovery != null) current.status
+                                else statusMessage("Connection failed", "FM-1 stopped responding. Refresh"),
                             )
                         }
                     }
@@ -410,6 +445,8 @@ class BackupModel(
     fun dismissBootloaderVerification() {
         if (!bootloaderVerificationState.working) {
             bootloaderVerificationState = BootloaderVerificationState()
+            recoveryBootloader = null
+            verifiedBootloaderDeviceName = null
         }
     }
 
@@ -417,11 +454,14 @@ class BackupModel(
     fun verifyBootloader() {
         if (!state.ready || state.busy || bootloaderVerificationState.working) return
         cancelled.set(false)
+        verifiedBootloaderDeviceName = null
+        recoveryBootloader = null
         bootloaderVerificationState = BootloaderVerificationState(showDialog = true, working = true)
         state = state.copy(busy = true)
         worker.execute {
             try {
                 val activeProtocol = protocol ?: throw ProtocolException("Connect to the FM-1 first")
+                val deviceName = activeDeviceName
                 val result = BootloaderVerifier.read(activeProtocol::readFlash, ::checkCancelled) { bytesRead ->
                     mainHandler.post {
                         bootloaderVerificationState = bootloaderVerificationState.copy(bytesRead = bytesRead)
@@ -429,6 +469,9 @@ class BackupModel(
                 }
                 mainHandler.post {
                     state = state.copy(busy = false)
+                    verifiedBootloaderDeviceName = deviceName.takeIf {
+                        state.ready && state.device?.deviceName == it && loaderDeviceName == it
+                    }
                     bootloaderVerificationState = bootloaderVerificationState.copy(
                         working = false,
                         sha256 = result.sha256,
@@ -447,6 +490,7 @@ class BackupModel(
                         Log.w("BackupModel", "Could not close bootloader verification session", closeFailure)
                     }
                 }
+
                 mainHandler.post {
                     state = state.copy(
                         busy = false,
@@ -457,6 +501,158 @@ class BackupModel(
                         message = if (wasCancelled) "Verification cancelled. No flash was changed."
                         else "Could not verify the bootloader: ${failure.message ?: failure.javaClass.simpleName}",
                     )
+                }
+            }
+        }
+    }
+
+    /** Downloads on a separate executor so the USB worker can keep the RAM loader alive while waiting. */
+    fun prepareEmergencyRecovery() {
+        if (!bootloaderVerificationState.canRecover(BuildConfig.DEBUG) || !emergencyRecoveryConnected ||
+            bootloaderVerificationState.recovery != null
+        ) return
+        recoveryBootloader = null
+        bootloaderVerificationState = bootloaderVerificationState.copy(
+            working = true, recovery = EmergencyRecoveryState(),
+        )
+        state = state.copy(busy = true)
+        recoveryDownloader.execute {
+            try {
+                var lastProgress = -1
+                val bytes = downloadV15Package { downloaded ->
+                    val percent = (downloaded * 100 / V15RecoveryImage.PACKAGE_SIZE).toInt()
+                    if (percent != lastProgress) {
+                        lastProgress = percent
+                        updateEmergencyRecovery { it.copy(progress = percent / 100f) }
+                    }
+                }
+                updateEmergencyRecovery { it.copy(phase = "Verifying stock bootloader", progress = null) }
+                val bootloader = BootloaderRecovery.fromPackage(bytes)
+                mainHandler.post {
+                    recoveryBootloader = bootloader
+                    state = state.copy(busy = false)
+                    refresh()
+                    bootloaderVerificationState = bootloaderVerificationState.copy(
+                        working = false,
+                        recovery = EmergencyRecoveryState(stage = EmergencyRecoveryStage.CONFIRM),
+                    )
+                }
+            } catch (failure: Exception) {
+                Log.w("BackupModel", "Could not download or validate emergency recovery data", failure)
+                mainHandler.post {
+                    state = state.copy(busy = false)
+                    bootloaderVerificationState = bootloaderVerificationState.copy(
+                        working = false,
+                        recovery = EmergencyRecoveryState(
+                            stage = EmergencyRecoveryStage.FAILURE,
+                            message = "Failed to download recovery data from M-VAVE repo.",
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun updateEmergencyRecovery(update: (EmergencyRecoveryState) -> EmergencyRecoveryState) {
+        mainHandler.post {
+            bootloaderVerificationState.recovery?.let { current ->
+                bootloaderVerificationState = bootloaderVerificationState.copy(recovery = update(current))
+            }
+        }
+    }
+
+    /**
+     * Starts only from the risk-confirmation stage and rechecks the same recovery session before I/O.
+     * Uses foreground-transfer protection without publishing recovery status to the main information box.
+     * Leaves the RAM loader running after either outcome; no automatic reboot is requested.
+     */
+    fun restoreEmergencyBootloader() {
+        if (bootloaderVerificationState.recovery?.stage != EmergencyRecoveryStage.CONFIRM ||
+            !bootloaderVerificationState.canRecover(BuildConfig.DEBUG) || !emergencyRecoveryConnected
+        ) return
+        val image = recoveryBootloader ?: return
+        val deviceName = verifiedBootloaderDeviceName ?: return
+        if (!batterySetupApproved { message -> failEmergencyRecoveryStart(message) }) return
+        if (!beginTransfer(FlashOperation.RESTORE)) return
+        cancelled.set(false)
+        bootloaderVerificationState = bootloaderVerificationState.copy(
+            working = true,
+            recovery = EmergencyRecoveryState(
+                stage = EmergencyRecoveryStage.FLASHING, phase = "Checking recovery connection", progress = null,
+            ),
+        )
+        state = state.copy(busy = true)
+        worker.execute {
+            var mutationStarted = false
+            var outcome = TransferOutcome.FAILURE
+            try {
+                val active = protocol ?: throw ProtocolException("The recovery connection is no longer available.")
+                val checkConnection = {
+                    val live = AndroidUsb.devices(manager).singleOrNull()
+                    if (live?.deviceName != deviceName || activeDeviceName != deviceName ||
+                        loaderDeviceName != deviceName || !manager.hasPermission(live)
+                    ) throw ProtocolException("The FM-1 is no longer connected in recovery mode.")
+                }
+                val hash = BootloaderRecovery(active).run(
+                    image,
+                    forceRewrite = BuildConfig.DEBUG,
+                    checkConnection = checkConnection,
+                    saveOriginal = { original ->
+                        val file = File.createTempFile("bootloader-before-recovery-", ".bin", application.filesDir)
+                        file.outputStream().use { output ->
+                            output.write(original)
+                            output.fd.sync()
+                        }
+                        if (!file.readBytes().contentEquals(original)) {
+                            throw IOException("Could not verify the saved original bootloader.")
+                        }
+                        Log.i("BackupModel", "Saved original bootloader to ${file.name}")
+                    },
+                    mutationStarting = { mutationStarted = true },
+                    progress = { phase, bytes ->
+                        updateEmergencyRecovery {
+                            it.copy(phase = phase, progress = bytes.toFloat() / FlashRestore.PROTECTED_SIZE)
+                        }
+                    },
+                )
+                outcome = TransferOutcome.SUCCESS
+                mainHandler.post {
+                    state = state.copy(busy = false)
+                    bootloaderVerificationState = bootloaderVerificationState.copy(
+                        working = false, sha256 = hash, matchesStockV15 = true,
+                        identity = null, matchesPublishedRelease = false,
+                        recovery = EmergencyRecoveryState(
+                            stage = EmergencyRecoveryStage.SUCCESS,
+                            message = "Stock v15 bootloader restored and verified.\n\nFirmware, projects and settings outside the boot area were not changed. The FM-1 remains in recovery mode.",
+                        ),
+                    )
+                }
+            } catch (failure: Exception) {
+                Log.e("BackupModel", "Emergency bootloader recovery failed", failure)
+                // Never reset after a failed write; the RAM loader may be the only remaining access.
+                val warning = if (mutationStarted) {
+                    "The bootloader may be incomplete. Do not disconnect or restart the FM-1; additional hardware may be needed to recover it."
+                } else {
+                    "No bootloader erase or write was requested."
+                }
+                mainHandler.post {
+                    state = state.copy(
+                        busy = false, ready = state.ready && failure is RestoreVerificationException,
+                    )
+                    verifiedBootloaderDeviceName = null
+                    bootloaderVerificationState = bootloaderVerificationState.copy(
+                        working = false,
+                        recovery = EmergencyRecoveryState(
+                            stage = EmergencyRecoveryStage.FAILURE,
+                            message = "Emergency recovery failed: ${failure.message ?: failure.javaClass.simpleName}. $warning",
+                        ),
+                    )
+                }
+
+            } finally {
+                mainHandler.post {
+                    recoveryBootloader = null
+                    endTransfer(outcome)
                 }
             }
         }
@@ -498,6 +694,7 @@ class BackupModel(
             // A removed FM-1 must fall through to the no-connection state, not stale text.
             status = if (staleConnectionStatus) StatusMessage() else state.status,
         ).withCurrentBackupHash()
+        if (!state.ready) verifiedBootloaderDeviceName = null
         updateDiscoveryTimer(mode == DeviceMode.SEARCHING)
         if (mode != DeviceMode.MIDI) {
             queriedMidiId = null
@@ -838,7 +1035,21 @@ class BackupModel(
         }
     }
 
+    /** Startup failures stay in the modal, including errors reported synchronously by TransferService. */
+    private fun failEmergencyRecoveryStart(message: String) {
+        bootloaderVerificationState = bootloaderVerificationState.copy(
+            recovery = EmergencyRecoveryState(
+                stage = EmergencyRecoveryStage.FAILURE,
+                message = "$message No flash changes requested.",
+            ),
+        )
+    }
+
     fun transferStartFailed(message: String) {
+        if (bootloaderVerificationState.recovery?.stage == EmergencyRecoveryStage.CONFIRM) {
+            failEmergencyRecoveryStart(message)
+            return
+        }
         state = state.copy(status = statusMessage("Transfer could not start", "$message No flash changes requested"))
     }
 
@@ -886,15 +1097,17 @@ class BackupModel(
         )
     )
 
-    private fun batterySetupApproved(): Boolean {
+    private fun batterySetupApproved(
+        onFailure: (String) -> Unit = {
+            state = state.copy(
+                status = statusMessage("Backup and restore are blocked", it),
+            )
+        },
+    ): Boolean {
         if (application.getSystemService(PowerManager::class.java)
                 .isIgnoringBatteryOptimizations(application.packageName)
         ) return true
-        state = state.copy(
-            status = statusMessage(
-                "Backup and restore are blocked", "Allow background operation in Settings"
-            )
-        )
+        onFailure("Allow background operation in Settings")
         return false
     }
 
@@ -1050,6 +1263,7 @@ class BackupModel(
     fun connect() {
         if ((state.busy && !state.autoConnectPending) || state.ready) return
         val device = state.device ?: return
+        verifiedBootloaderDeviceName = null
         val firmwareIdentity = state.firmwareIdentity
         synchronized(connectionTrace) { connectionTrace.clear() }
         traceConnection(
@@ -1686,6 +1900,7 @@ class BackupModel(
         mainHandler.removeCallbacks(discoveryTimeout)
         midiManager?.unregisterDeviceCallback(midiCallback)
         cancelled.set(true)
+        recoveryDownloader.shutdownNow()
         worker.execute { closeSession() }
         worker.shutdown()
     }

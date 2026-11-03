@@ -49,6 +49,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     // Keep Java and Kotlin bytecode targets aligned with the documented JDK 17 build.
     compileOptions {
