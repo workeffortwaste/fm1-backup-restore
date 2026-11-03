@@ -135,7 +135,7 @@ private val CONNECTION_STATUS_PREFIXES = listOf(
     "FM-1 successfully connected", "Reported firmware", "Firmware identity unavailable",
     "Waiting for FM-1", "Connecting to FM-1", "Ready to connect to FM-1", "FM-1 disconnected",
     "Waiting for USB permission", "USB permission denied", "USB permission request cancelled",
-    "Connection failed", "Firmware query failed", "Bootloader request failed", "FM-1 restart requested",
+    "Connection failed", "Firmware query failed", "Bootloader request failed", "Waiting for MIDI connection",
     "Bootloader request cancelled", "Stopped waiting",
 )
 
@@ -554,7 +554,7 @@ class BackupModel(
         cancelled.set(false)
         state = state.returnToMidi()
         worker.execute {
-            var result = statusMessage("FM-1 restart requested", "Waiting for the MIDI connection")
+            var result = statusMessage("Waiting for MIDI connection", "")
             try {
                 val active = protocol ?: throw IOException("The USB session is no longer available")
                 try {
@@ -562,9 +562,6 @@ class BackupModel(
                 } catch (failure: IOException) {
                     // Like restore, a reset may drop USB before replying; discovery observes the result.
                     Log.i("BackupModel", "MIDI reboot reply not received", failure)
-                    result = statusMessage(
-                        "FM-1 restart not confirmed", "The USB reply was interrupted. Checking the device connection",
-                    )
                 } finally {
                     closeSession()
                 }
