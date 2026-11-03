@@ -94,6 +94,22 @@ Once **FM-1_015 RECOVERY** is available in your backups, opening the menu on the
 
 > **How's this work?** <br/>It takes all the regions of data that are available in the v15 .fwsc update and creates a complete flash snapshot using them. Any regions of data that are missing from the .fwsc (settings, BTIF, etc) are filled with `FF` and get automatically populated when the FM-1 boots.
 
+#### Emergency bootloader recovery
+
+*Still having weird issues with your device even after stock recovery?*
+
+It may be that there are issues with your bootloader, as this is the only region that's not touched by the restore feature of this app.
+
+You can verify the state of your bootloader from the *Diagnostics* menu.
+
+After **Verify bootloader** finishes, its result dialog offers **Emergency restore** if your bootloader differs from a known stock image or custom bootloader. A recognised custom bootloader with an unmatched hash also qualifies; an unknown hash alone does not mean that the bootloader is corrupt.
+
+**Emergency Recover** downloads the official v15 firmware from M-VAVE's repository and extracts the bootloader before offering to **Proceed at my own risk**. Unlike an ordinary restore, this explicitly replaces only the first 16 KiB of your FM-1's flash. Firmware, projects and settings outside that area are untouched.
+
+>[!WARNING]
+>Interrupted or incorrect bootloader programming can prevent booting or recovery
+>via SysEx and may require additional hardware to repair.
+
 ## Themes
 
 The app is built with **Material 3 Expressive**, with support for your Material You dynamic colors alongside the built-in FM-1 styled themes.
