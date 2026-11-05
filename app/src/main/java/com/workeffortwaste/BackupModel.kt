@@ -1156,7 +1156,7 @@ class BackupModel(
                         working = false,
                         progress = 100,
                         phase = "",
-                        message = "FM-1_015 RECOVERY was added to your backup library with the FM-1_015 tag. It has not been restored.",
+                        message = "FM-1_015 RECOVERY was added to your backup library.",
                         completed = true,
                     )
                 }
