@@ -21,6 +21,9 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.security.MessageDigest
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.zip.ZipInputStream
 
 /** Exercises external backup validation and import without connecting to or writing to USB. */
 @SdkSuppress(minSdkVersion = 29)
@@ -102,7 +105,8 @@ class ImportBackupTest {
 
         compose.runOnIdle { model.saveImportedBackup("") }
         assertNotNull(model.state.selectedImport)
-        assertEquals("File name required", model.state.status.heading)
+        assertTrue(model.firmwareImportState.message.startsWith("File name required"))
+        assertEquals(originalStatus, model.state.status)
 
         val importName = "Imported-${System.currentTimeMillis()}"
         val importStartedAt = System.currentTimeMillis()
@@ -118,40 +122,160 @@ class ImportBackupTest {
         )
         assertEquals(0, starts)
         assertNull(model.state.selectedImport)
-        assertEquals("Backup imported", model.state.status.heading)
+        assertTrue(model.firmwareImportState.completed)
+        assertTrue(model.firmwareImportState.message.startsWith("Backup imported"))
+        assertEquals(originalStatus, model.state.status)
+        val savedIds = model.state.backups.map { it.id }
+        select(document("different-name-same-image.bin", bytes))
+        assertNull(model.state.selectedImport)
+        assertTrue(model.firmwareImportState.completed)
+        assertEquals("Not imported. A backup with this SHA-256 is already in the library.",
+            model.firmwareImportState.message)
+        assertEquals(savedIds, model.state.backups.map { it.id })
+        assertEquals(originalStatus, model.state.status)
         compose.runOnIdle { model.deleteBackup(importedBackup.id) }
         compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
     }
 
     @Test
     fun rejectsWrongSizeAndClearsPreviouslyValidatedSelection() {
+        val originalStatus = model.state.status
         select(document("fm-1-good.bin", ByteArray(FlashRestore.FLASH_SIZE)))
         assertNotNull(model.state.selectedImport)
         for (size in listOf(0, FlashRestore.FLASH_SIZE - 1, FlashRestore.FLASH_SIZE + 1)) {
             select(document("fm-1-invalid-$size.bin", ByteArray(size)))
             assertNull(model.state.selectedImport)
-            assertTrue(model.state.status.isNotEmpty)
+            assertTrue(model.firmwareImportState.message.startsWith("Import file rejected"))
+            assertEquals(originalStatus, model.state.status)
             assertEquals(0, starts)
         }
     }
 
     @Test
     fun rejectsNonBinaryFileEvenIfItsLengthMatches() {
+        val originalStatus = model.state.status
         select(document("fm-1-not-binary.dat", ByteArray(FlashRestore.FLASH_SIZE)))
         assertNull(model.state.selectedImport)
-        assertEquals("Import file rejected", model.state.status.heading)
+        assertTrue(model.firmwareImportState.message.startsWith("Import file rejected"))
+        assertEquals(originalStatus, model.state.status)
         assertEquals(0, starts)
     }
 
     @Test
     fun inaccessibleDocumentIsReportedWithoutStartingTransfer() {
+        val originalStatus = model.state.status
         val uri = document("fm-1-deleted.bin", ByteArray(FlashRestore.FLASH_SIZE))
         resolver.delete(uri, null, null)
         documents.remove(uri)
         select(uri)
         assertNull(model.state.selectedImport)
-        assertEquals("Import file rejected", model.state.status.heading)
+        assertTrue(model.firmwareImportState.message.startsWith("Import file rejected"))
+        assertEquals(originalStatus, model.state.status)
         assertEquals(0, starts)
+    }
+
+    @Test
+    fun zipImportAndSingleExportPreserveMetadataWithoutChangingMainInformation() {
+        val directory = File(application.cacheDir, "archive-test-${System.nanoTime()}")
+        val store = BackupStore(directory)
+        val initialIds = model.state.backups.map { it.id }.toSet()
+        val originalStatus = model.state.status
+        val originalHash = model.state.hash
+        val originalProgress = model.state.progress
+        val metadata = BackupMetadata(
+            classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
+            userFamily = DeviceFamily.SMK37, userFirmwareLabel = "Imported custom tag",
+        )
+        try {
+            val bytes = ByteArray(FlashRestore.FLASH_SIZE) { (it * 31).toByte() }
+            val hash = RestoreImage.hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+            val entry = store.publishWithMetadata(store.createPending().apply { writeBytes(bytes) }, hash,
+                "ZIP test", metadata)
+            val archive = ByteArrayOutputStream()
+            store.exportBackupZip(entry, archive)
+            select(document("backup.zip", archive.toByteArray()))
+            val imported = model.state.backups.single { it.id !in initialIds }
+            assertEquals(metadata, imported.metadata)
+            assertEquals(entry.createdAt, imported.createdAt)
+            assertEquals(hash, imported.sha256)
+            assertTrue(model.firmwareImportState.completed)
+            compose.runOnIdle { model.cancelImport() }
+
+            val destination = document("export.zip", byteArrayOf())
+            compose.runOnIdle {
+                model.showFirmwareExportDialog(imported.id)
+                model.exportAllFirmware(destination)
+            }
+            compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
+            assertTrue(model.firmwareExportState.completed)
+            assertTrue(model.firmwareExportState.message.startsWith("Exported 1 backup"))
+            val names = mutableListOf<String>()
+            requireNotNull(resolver.openInputStream(destination)).use { source ->
+                ZipInputStream(source).use { zip ->
+                    while (true) {
+                        val item = zip.nextEntry ?: break
+                        names += item.name
+                    }
+                }
+            }
+            assertEquals(listOf(BackupStore.exportFileName(imported),
+                BackupStore.exportFileName(imported).removeSuffix(".bin") + ".json"), names)
+            val savedIds = model.state.backups.map { it.id }
+            select(destination)
+            assertEquals("No backups imported. Matching backups are already in the library.",
+                model.firmwareImportState.message)
+            assertEquals(savedIds, model.state.backups.map { it.id })
+            select(document("same-image-no-metadata.bin", bytes))
+            assertNull(model.state.selectedImport)
+            assertEquals("Not imported. A backup with this SHA-256 is already in the library.",
+                model.firmwareImportState.message)
+            assertEquals(savedIds, model.state.backups.map { it.id })
+            assertEquals(originalStatus, model.state.status)
+            assertEquals(originalHash, model.state.hash)
+            assertEquals(originalProgress, model.state.progress)
+            assertEquals(0, starts)
+        } finally {
+            directory.deleteRecursively()
+            model.state.backups.filter { it.id !in initialIds }.forEach { entry ->
+                compose.runOnIdle { model.deleteBackup(entry.id) }
+                compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
+            }
+        }
+    }
+
+    @Test
+    fun bulkZipImportsAllVerifiedPackages() {
+        val directory = File(application.cacheDir, "bulk-archive-test-${System.nanoTime()}")
+        val store = BackupStore(directory)
+        val initialIds = model.state.backups.map { it.id }.toSet()
+        val originalStatus = model.state.status
+        try {
+            val entries = (1..2).map { seed ->
+                val bytes = ByteArray(FlashRestore.FLASH_SIZE) { (it * seed).toByte() }
+                val hash = RestoreImage.hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+                store.publish(store.createPending().apply { writeBytes(bytes) }, hash, "Bulk $seed")
+            }
+            val archive = ByteArrayOutputStream()
+            store.exportZip(entries, archive)
+            val source = document("all-backups.zip", archive.toByteArray())
+            select(source)
+            val imported = model.state.backups.filter { it.id !in initialIds }
+            assertEquals(entries.map { it.sha256 }.toSet(), imported.map { it.sha256 }.toSet())
+            assertEquals("Imported 2 verified backups.", model.firmwareImportState.message)
+            val savedIds = model.state.backups.map { it.id }
+            select(source)
+            assertEquals(savedIds, model.state.backups.map { it.id })
+            assertEquals("No backups imported. Matching backups are already in the library.",
+                model.firmwareImportState.message)
+            assertEquals(originalStatus, model.state.status)
+            assertEquals(0, starts)
+        } finally {
+            directory.deleteRecursively()
+            model.state.backups.filter { it.id !in initialIds }.forEach { entry ->
+                compose.runOnIdle { model.deleteBackup(entry.id) }
+                compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
+            }
+        }
     }
 
     @Test

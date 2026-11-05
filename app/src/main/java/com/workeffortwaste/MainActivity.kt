@@ -1221,6 +1221,7 @@ class MainActivity : ComponentActivity() {
         val v15RecoveryState = model.v15RecoveryState
         val bootloaderVerificationState = model.bootloaderVerificationState
         val firmwareExportState = model.firmwareExportState
+        val firmwareImportState = model.firmwareImportState
         LaunchedEffect(state.autoConnectPending, state.device, state.busy, updater.installerOpen) {
             if (state.autoConnectPending && state.device != null && !updater.installerOpen) {
                 onConnect()
@@ -1257,7 +1258,6 @@ class MainActivity : ComponentActivity() {
         var manualFamilyChoice by rememberSaveable { mutableStateOf<DeviceFamily?>(null) }
         var manualPromptedDevice by rememberSaveable { mutableStateOf<String?>(null) }
         var importName by rememberSaveable { mutableStateOf("") }
-        var exportSource by rememberSaveable { mutableStateOf<String?>(null) }
         var backupActions by rememberSaveable { mutableStateOf<String?>(null) }
         var showAppMenu by rememberSaveable { mutableStateOf(false) }
         var showSupportMenu by rememberSaveable { mutableStateOf(false) }
@@ -1292,14 +1292,6 @@ class MainActivity : ComponentActivity() {
             choosingFile = false
             if (sourceUri != null) model.selectImportFile(sourceUri)
         }
-        val documentPicker = rememberLauncherForActivityResult(
-            ActivityResultContracts.CreateDocument("application/octet-stream"),
-        ) { destinationUri ->
-            choosingFile = false
-            val id = exportSource
-            exportSource = null
-            if (destinationUri != null && id != null) model.exportBackup(id, destinationUri)
-        }
         val zipPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.CreateDocument("application/zip"),
         ) { destinationUri ->
@@ -1311,12 +1303,7 @@ class MainActivity : ComponentActivity() {
             backupActions = null
             when (action) {
                 BackupAction.RESTORE -> savedRestore = entry.id
-                BackupAction.EXPORT -> {
-                    exportSource = entry.id
-                    choosingFile = true
-                    documentPicker.launch(BackupStore.exportFileName(entry))
-                }
-
+                BackupAction.EXPORT -> model.showFirmwareExportDialog(entry.id)
                 BackupAction.TOGGLE_PIN -> onButtonClick { model.togglePinnedBackup(entry.id) }
                 BackupAction.SHA -> shaSource = entry.id
                 BackupAction.RENAME -> {
@@ -1342,10 +1329,11 @@ class MainActivity : ComponentActivity() {
             }
         }
         val pickerAvailable = !choosingFile && !state.libraryLoading && savedRestore == null && deleteSource == null &&
-            state.selectedImport == null && !firmwareExportState.showDialog
+            state.selectedImport == null && !firmwareExportState.showDialog && !firmwareImportState.showDialog
         val editable = !state.busy && !v15RecoveryState.working && pickerAvailable
         val operationEligible = !state.busy && state.ready && batteryExempt && !state.libraryLoading &&
-            !v15RecoveryState.working && !firmwareExportState.showDialog && state.canBackUpWithFamily
+            !v15RecoveryState.working && !firmwareExportState.showDialog && !firmwareImportState.showDialog &&
+            state.canBackUpWithFamily
         if (savedRestore != null) {
             val savedEntry = state.backups.find { it.id == savedRestore }
             val savedCompatibility = savedEntry?.let(relationFor) ?: BackupCompatibility.UNKNOWN
@@ -1438,40 +1426,19 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(state.selectedImport?.sourceName) {
             state.selectedImport?.sourceName?.let { importName = it.dropLast(4) }
         }
-        state.selectedImport?.takeIf { !state.busy }?.let {
-            val valid = importName.isNotBlank() && importName.length <= BackupStore.MAX_NAME_LENGTH &&
-                    importName.all { character -> character.code in 32..126 }
-            AlertDialog(
-                onDismissRequest = { onButtonClick(model::cancelImport) },
-                title = { Text("Save imported backup") },
-                text = {
-                    OutlinedTextField(
-                        value = importName,
-                        onValueChange = { importName = it },
-                        label = { Text("File name") },
-                        trailingIcon = { Text(".bin") },
-                        singleLine = true,
-                        isError = !valid,
-                        supportingText = {
-                            Text("Required · printable ASCII, up to ${BackupStore.MAX_NAME_LENGTH} characters")
-                        },
-                    )
-                },
-                confirmButton = {
-                    TextButton(
-                        enabled = valid,
-                        modifier = Modifier.heightIn(min = 48.dp),
-                        onClick = { onButtonClick { model.saveImportedBackup(importName) } },
-                    ) { Text("Save") }
-                },
-                dismissButton = {
-                    TextButton(
-                        onClick = { onButtonClick(model::cancelImport) },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                    ) { Text("Cancel") }
-                },
-            )
-        }
+        FirmwareImportDialog(
+            state = firmwareImportState,
+            selected = state.selectedImport,
+            name = importName,
+            onNameChange = { importName = it },
+            pickerOpen = choosingFile,
+            onChoose = {
+                choosingFile = true
+                importPicker.launch(arrayOf("application/zip", "application/octet-stream", "application/x-binary", "*/*"))
+            },
+            onSave = { model.saveImportedBackup(importName) },
+            onCancel = model::cancelImport,
+        )
         shaSource?.let { id ->
             state.backups.find { it.id == id }?.let { entry ->
                 AlertDialog(
@@ -1646,7 +1613,12 @@ class MainActivity : ComponentActivity() {
             onCancel = model::cancelFirmwareExport,
             onExport = {
                 choosingFile = true
-                zipPicker.launch("fm1-backups-${java.time.LocalDate.now()}.zip")
+                val fileName = if (firmwareExportState.singleBackup) {
+                    BackupStore.exportArchiveName(firmwareExportState.entries.single())
+                } else {
+                    "fm1-backups-${java.time.LocalDate.now()}.zip"
+                }
+                zipPicker.launch(fileName)
             },
         )
         TransferScreenTransition(state = state, titleColor = titleColor) {
@@ -1793,17 +1765,10 @@ class MainActivity : ComponentActivity() {
                                         DropdownMenuItem(
                                             text = { Text("Import from file") },
                                             shape = MenuDefaults.leadingItemShape,
-                                            enabled = editable && batteryExempt,
+                                            enabled = editable,
                                             onClick = {
                                                 showAppMenu = false
-                                                choosingFile = true
-                                                importPicker.launch(
-                                                    arrayOf(
-                                                        "application/octet-stream",
-                                                        "application/x-binary",
-                                                        "*/*"
-                                                    )
-                                                )
+                                                model.showFirmwareImportDialog()
                                             },
                                         )
                                         DropdownMenuItem(
@@ -1812,7 +1777,7 @@ class MainActivity : ComponentActivity() {
                                             enabled = editable && state.backups.isNotEmpty(),
                                             onClick = {
                                                 showAppMenu = false
-                                                onButtonClick(model::showFirmwareExportDialog)
+                                                model.showFirmwareExportDialog()
                                             },
                                         )
                                         if (state.canOfferFm1RecoverySnapshot) {

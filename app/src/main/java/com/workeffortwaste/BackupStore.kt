@@ -1,24 +1,39 @@
 package com.workeffortwaste
 
-import com.workeffortwaste.protocol.FlashRestore
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.google.gson.JsonParseException
+import com.google.gson.JsonParser
 import com.workeffortwaste.protocol.BootSpiConfig
+import com.workeffortwaste.protocol.FlashRestore
 import com.workeffortwaste.protocol.Fm1Protocol
 import com.workeffortwaste.protocol.RestoreImage
 import com.workeffortwaste.protocol.SMK_TRIM_MARKER_ADDRESS
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.FileOutputStream
 import java.io.RandomAccessFile
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.text.Normalizer
 import java.util.Locale
 import java.util.Properties
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.StandardCopyOption
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+
+private data class BackupArchiveMetadata(
+    val identifier: String,
+    val schema: Int,
+    val sha256: String,
+    val createdAt: Long,
+    val firmwareIdentity: String?,
+    val metadata: BackupMetadata?,
+)
 
 data class BackupMetadata(
     val classification: DeviceClassification = DeviceClassification(),
@@ -54,7 +69,7 @@ fun BackupEntry.identityLine(): String {
     return firmware.orEmpty()
 }
 
-/** Worker-only private library. Only closed, device-verified images are atomically published. */
+/** Worker-only private library. Only complete, hash-verified images are atomically published. */
 class BackupStore(private val directory: File) {
     fun createPending(): File {
         if (!directory.isDirectory && !directory.mkdirs()) throw IOException("Cannot create backup library")
@@ -84,6 +99,7 @@ class BackupStore(private val directory: File) {
         checkCancelled: () -> Unit,
         progress: (bytes: Long, total: Long) -> Unit,
         metadata: BackupMetadata?,
+        createdAt: Long? = null,
     ): BackupEntry {
         require(PENDING.matches(pending.name) && owned(pending.name) == pending.canonicalFile)
         require(HASH.matches(deviceHash)) { "Invalid backup hash" }
@@ -98,7 +114,9 @@ class BackupStore(private val directory: File) {
         }
         val firmwareSuffix =
             firmwareIdentity?.let { "-fw-${RestoreImage.hex(it.toByteArray(Charsets.US_ASCII))}" } ?: ""
-        val id = "${pending.name.removeSuffix(".partial")}-$deviceHash$firmwareSuffix.bin"
+        val base = if (createdAt == null) pending.name.removeSuffix(".partial")
+            else "fm1-$createdAt-${pending.name.split('-')[2].removeSuffix(".partial")}"
+        val id = "$base-$deviceHash$firmwareSuffix.bin"
         val destination = owned(id)
         if (destination.exists()) throw IOException("Cannot publish backup")
         if (metadata != null) writeMetadata(id, metadata)
@@ -162,23 +180,234 @@ class BackupStore(private val directory: File) {
             require(unique.isNotEmpty()) { "No backups to export" }
             val total = unique.size.toLong() * FlashRestore.FLASH_SIZE
             var processed = 0L
-            val buffer = ByteArray(65536)
             for (entry in unique) {
                 checkCancelled()
-                open(entry.id, checkCancelled).use { source ->
-                    zip.putNextEntry(ZipEntry(exportFileName(entry)))
-                    while (true) {
-                        checkCancelled()
-                        val count = source.read(buffer)
-                        if (count < 0) break
-                        zip.write(buffer, 0, count)
-                        processed += count
-                        progress(processed, total)
-                    }
-                    zip.closeEntry()
+                val archive = ByteArrayOutputStream()
+                exportBackupZip(entry, archive, checkCancelled) { bytes, _ ->
+                    progress(processed + bytes, total)
                 }
+                zip.putNextEntry(ZipEntry(exportArchiveName(entry)))
+                zip.write(archive.toByteArray())
+                zip.closeEntry()
+                processed += FlashRestore.FLASH_SIZE
             }
             checkCancelled()
+        }
+    }
+
+    fun exportBackupZip(
+        entry: BackupEntry,
+        destination: OutputStream,
+        checkCancelled: () -> Unit = {},
+        progress: (bytes: Long, total: Long) -> Unit = { _, _ -> },
+    ) {
+        val saved = entry(entry.id)
+        ZipOutputStream(destination.buffered()).use { zip ->
+            val name = exportFileName(saved)
+            zip.putNextEntry(ZipEntry(name))
+            var processed = 0L
+            open(saved.id, checkCancelled).use { source ->
+                val buffer = ByteArray(65536)
+                while (true) {
+                    checkCancelled()
+                    val count = source.read(buffer)
+                    if (count < 0) break
+                    zip.write(buffer, 0, count)
+                    processed += count
+                    progress(processed, FlashRestore.FLASH_SIZE.toLong())
+                }
+            }
+            zip.closeEntry()
+            zip.putNextEntry(ZipEntry(name.removeSuffix(".bin") + ".json"))
+            val metadata = archiveMetadata(saved)
+            zip.write(Gson().toJson(metadata).toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            checkCancelled()
+        }
+    }
+
+    /** Imports only identified JSON/BIN pairs; a failed batch rolls back its new library entries. */
+    fun importZip(
+        source: InputStream,
+        checkCancelled: () -> Unit = {},
+        progress: (verifiedBackups: Int) -> Unit = {},
+    ): List<BackupEntry> {
+        val pending = mutableListOf<Pair<File, BackupArchiveMetadata>>()
+        val staged = mutableListOf<File>()
+        val published = mutableListOf<BackupEntry>()
+        var expanded = 0L
+        var entryCount = 0
+        fun readArchive(input: InputStream, depth: Int) {
+            val files = linkedMapOf<String, File>()
+            val names = mutableSetOf<String>()
+            ZipInputStream(input.buffered()).use { zip ->
+                while (true) {
+                    checkCancelled()
+                    val item = zip.nextEntry ?: break
+                    require(++entryCount <= MAX_ARCHIVE_ENTRIES) { "Too many archive entries" }
+                    val name = item.name
+                    require(name.isNotEmpty() && !name.startsWith('/') && '\\' !in name &&
+                        name.split('/').none { it == ".." || it == "." }) { "Unsafe archive path" }
+                    if (item.isDirectory) {
+                        require(zip.read() == -1) { "Archive directory contains data" }
+                        continue
+                    }
+                    require(names.add(name)) { "Duplicate archive entry" }
+                    val file = createPending()
+                    staged += file
+                    val buffer = ByteArray(65536)
+                    var size = 0L
+                    file.outputStream().buffered().use { output ->
+                        while (true) {
+                            checkCancelled()
+                            val count = zip.read(buffer)
+                            if (count < 0) break
+                            expanded += count
+                            size += count
+                            require(size <= MAX_ARCHIVE_ENTRY_BYTES &&
+                                expanded <= MAX_ARCHIVE_EXPANDED_BYTES) { "Archive is too large" }
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                    if (name.endsWith(".zip", true)) {
+                        require(depth == 0) { "Archive nesting is too deep" }
+                        readArchive(file.inputStream(), depth + 1)
+                    } else {
+                        if (name.endsWith(".json", true)) {
+                            require(size <= MAX_ARCHIVE_JSON_BYTES) { "Backup JSON is too large" }
+                        }
+                        files[name] = file
+                    }
+                }
+            }
+            for ((name, file) in files) {
+                checkCancelled()
+                if (!name.endsWith(".json", true)) continue
+                val metadata = readArchiveMetadata(file) ?: continue
+                val image = files[name.dropLast(5) + ".bin"]
+                    ?: throw IOException("Backup JSON has no matching BIN")
+                require(image.length() == FlashRestore.FLASH_SIZE.toLong()) { "Invalid backup size" }
+                require(verified(image, metadata.sha256, checkCancelled)) { "Backup SHA-256 does not match metadata" }
+                pending += image to metadata
+                progress(pending.size)
+            }
+        }
+        try {
+            readArchive(source, 0)
+            require(pending.isNotEmpty()) { "No fm1-backup-restore JSON/BIN pairs found" }
+            val known = list().map(::archiveMetadata).toMutableSet()
+            for ((file, metadata) in pending) {
+                checkCancelled()
+                if (!known.add(metadata)) continue
+                val entry = publishInternal(
+                    pending = file,
+                    deviceHash = metadata.sha256,
+                    firmwareIdentity = metadata.firmwareIdentity,
+                    checkCancelled = checkCancelled,
+                    progress = { _, _ -> },
+                    metadata = metadata.metadata,
+                    createdAt = metadata.createdAt,
+                )
+                published += entry
+            }
+            checkCancelled()
+            return published
+        } catch (failure: Exception) {
+            published.forEach { runCatching { delete(it.id) } }
+            throw failure
+        } finally {
+            staged.forEach { discard(it) }
+        }
+    }
+
+    fun classifyImportedBackup(entry: BackupEntry): BackupEntry = upgradeLegacyFamily(entry)
+
+    private fun archiveMetadata(entry: BackupEntry): BackupArchiveMetadata = BackupArchiveMetadata(
+        identifier = ARCHIVE_IDENTIFIER,
+        schema = ARCHIVE_SCHEMA,
+        sha256 = entry.sha256,
+        createdAt = entry.createdAt,
+        firmwareIdentity = entry.firmwareIdentity,
+        metadata = entry.metadata,
+    )
+
+    /** Decodes fields explicitly so unknown enum values cannot silently become missing tags. */
+    private fun readArchiveMetadata(file: File): BackupArchiveMetadata? {
+        val parsed = try {
+            JsonParser.parseString(file.readText(Charsets.UTF_8))
+        } catch (_: JsonParseException) {
+            return null
+        }
+        if (!parsed.isJsonObject) return null
+        val json = parsed.asJsonObject
+        val identifier = json.get("identifier") ?: return null
+        if (!identifier.isJsonPrimitive || !identifier.asJsonPrimitive.isString ||
+            identifier.asString != ARCHIVE_IDENTIFIER
+        ) return null
+
+        require(json.longValue("schema") == ARCHIVE_SCHEMA.toLong()) { "Unsupported backup metadata schema" }
+        val hash = requireNotNull(json.stringValue("sha256")) { "Backup SHA-256 is missing" }
+        require(HASH.matches(hash)) { "Invalid backup SHA-256" }
+        val createdAt = requireNotNull(json.longValue("createdAt")) { "Backup date is missing" }
+        require(createdAt in 1000000000000L..9999999999999L) { "Invalid backup date" }
+        val metadata = json.objectValue("metadata")?.let { values ->
+            val evidence = requireNotNull(values.objectValue("classification")) { "Backup classification is missing" }
+            BackupMetadata(
+                classification = DeviceClassification(
+                    family = requireNotNull(evidence.enumValue<DeviceFamily>("family")) { "Backup family is missing" },
+                    origin = requireNotNull(evidence.enumValue<FamilyEvidenceOrigin>("origin")) { "Backup evidence origin is missing" },
+                    confidence = requireNotNull(evidence.enumValue<FamilyEvidenceConfidence>("confidence")) { "Backup confidence is missing" },
+                    rawMidiIdentity = evidence.stringValue("rawMidiIdentity"),
+                    spiSetting = evidence.stringValue("spiSetting"),
+                    jedecId = evidence.longValue("jedecId"),
+                    smkTrimMarkerPresent = requireNotNull(evidence.booleanValue("smkTrimMarkerPresent")) { "Backup trim evidence is missing" },
+                    suggestedFamily = evidence.enumValue<DeviceFamily>("suggestedFamily"),
+                    explanation = requireNotNull(evidence.stringValue("explanation")) { "Backup explanation is missing" },
+                ),
+                editorFirmwareLabel = values.stringValue("editorFirmwareLabel"),
+                manualFamilySelection = values.enumValue<DeviceFamily>("manualFamilySelection"),
+                userFamily = values.enumValue<DeviceFamily>("userFamily"),
+                userFirmwareLabel = values.stringValue("userFirmwareLabel"),
+            )
+        }
+        return BackupArchiveMetadata(
+            identifier = ARCHIVE_IDENTIFIER,
+            schema = ARCHIVE_SCHEMA,
+            sha256 = hash,
+            createdAt = createdAt,
+            firmwareIdentity = json.stringValue("firmwareIdentity"),
+            metadata = metadata,
+        )
+    }
+
+    private fun JsonObject.stringValue(name: String): String? {
+        val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
+        require(value.isJsonPrimitive && value.asJsonPrimitive.isString) { "Invalid backup metadata: $name must be a string" }
+        return value.asString
+    }
+
+    private fun JsonObject.longValue(name: String): Long? {
+        val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
+        require(value.isJsonPrimitive && value.asJsonPrimitive.isNumber) { "Invalid backup metadata: $name must be an integer" }
+        return requireNotNull(value.asString.toLongOrNull()) { "Invalid backup metadata: $name must be an integer" }
+    }
+
+    private fun JsonObject.booleanValue(name: String): Boolean? {
+        val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
+        require(value.isJsonPrimitive && value.asJsonPrimitive.isBoolean) { "Invalid backup metadata: $name must be a boolean" }
+        return value.asBoolean
+    }
+
+    private fun JsonObject.objectValue(name: String): JsonObject? {
+        val value = get(name)?.takeUnless { it.isJsonNull } ?: return null
+        require(value.isJsonObject) { "Invalid backup metadata: $name must be an object" }
+        return value.asJsonObject
+    }
+
+    private inline fun <reified T : Enum<T>> JsonObject.enumValue(name: String): T? {
+        val value = stringValue(name) ?: return null
+        return requireNotNull(enumValues<T>().firstOrNull { it.name == value }) {
+            "Unsupported backup metadata: $name=$value"
         }
     }
 
@@ -386,9 +615,18 @@ class BackupStore(private val directory: File) {
     }
 
     companion object {
+        private const val ARCHIVE_IDENTIFIER = "fm1-backup-restore"
+        private const val ARCHIVE_SCHEMA = 1
+        private const val MAX_ARCHIVE_ENTRIES = 1024
+        private const val MAX_ARCHIVE_ENTRY_BYTES = 2L * FlashRestore.FLASH_SIZE
+        private const val MAX_ARCHIVE_JSON_BYTES = 65536L
+        private const val MAX_ARCHIVE_EXPANDED_BYTES = 256L * FlashRestore.FLASH_SIZE
+
         /** Hex-encoded in the filename; 72 characters fits the 255-byte limit beside a 19-digit counter. */
         const val MAX_NAME_LENGTH = 72
-        fun uniqueExports(entries: List<BackupEntry>): List<BackupEntry> = entries.distinctBy(::exportFileName)
+        fun uniqueExports(entries: List<BackupEntry>): List<BackupEntry> = entries.distinctBy { it.sha256 }
+
+        fun exportArchiveName(entry: BackupEntry): String = exportFileName(entry).removeSuffix(".bin") + ".zip"
 
         fun exportFileName(entry: BackupEntry): String {
             val plainName = Normalizer.normalize(

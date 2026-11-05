@@ -88,6 +88,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.11.0")
+    implementation("com.google.code.gson:gson:2.13.2")
     implementation("com.mikepenz:multiplatform-markdown-renderer:0.43.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.43.0")
     // Protocol tests are plain JVM tests and do not require an emulator or physical FM1.

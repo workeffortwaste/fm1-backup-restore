@@ -104,6 +104,14 @@ enum class TransferOutcome {
 
 data class SelectedImport(val sourceName: String, val sha256: String)
 
+data class FirmwareImportState(
+    val showDialog: Boolean = false,
+    val working: Boolean = false,
+    val cancelling: Boolean = false,
+    val completed: Boolean = false,
+    val message: String = "",
+)
+
 data class FirmwareExportState(
     val showDialog: Boolean = false,
     val entries: List<BackupEntry> = emptyList(),
@@ -112,6 +120,7 @@ data class FirmwareExportState(
     val progress: Int = 0,
     val message: String = "",
     val completed: Boolean = false,
+    val singleBackup: Boolean = false,
 )
 
 data class V15RecoveryState(
@@ -402,6 +411,8 @@ class BackupModel(
     var v15RecoveryState by mutableStateOf(V15RecoveryState())
         private set
     var firmwareExportState by mutableStateOf(FirmwareExportState())
+        private set
+    var firmwareImportState by mutableStateOf(FirmwareImportState())
         private set
     var bootloaderVerificationState by mutableStateOf(BootloaderVerificationState())
         private set
@@ -1702,11 +1713,16 @@ class BackupModel(
         }
     }
 
-    /** Validates an external image before asking for the name of its private library copy. */
+    fun showFirmwareImportDialog() {
+        if (state.busy || state.libraryLoading || v15RecoveryState.working) return
+        firmwareImportState = FirmwareImportState(showDialog = true)
+    }
+
     fun selectImportFile(uri: Uri) {
         if (state.busy || state.libraryLoading) return
         cancelled.set(false)
         state = state.copy(busy = true, selectedImport = null)
+        firmwareImportState = FirmwareImportState(showDialog = true, working = true, message = "Verifying import")
         worker.execute {
             selectedImportBytes = null
             try {
@@ -1715,23 +1731,42 @@ class BackupModel(
                     if (!cursor.moveToFirst()) throw ProtocolException("Could not read import filename")
                     cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
                 } ?: throw ProtocolException("Could not read import filename")
+                if (name.endsWith(".zip", ignoreCase = true)) {
+                    val entries = resolver.openInputStream(uri)?.use { input ->
+                        backupStore.importZip(input, ::checkCancelled) { count ->
+                            mainHandler.post {
+                                firmwareImportState = firmwareImportState.copy(message = "Verified $count backups")
+                            }
+                        }
+                    } ?: throw ProtocolException("Could not open import source")
+                    mainHandler.post {
+                        finishFirmwareImport(
+                            message = if (entries.isEmpty()) "No backups imported. Matching backups are already in the library."
+                                else "Imported ${entries.size} verified ${if (entries.size == 1) "backup" else "backups"}.",
+                            entries = entries,
+                        )
+                    }
+                    return@execute
+                }
                 RestoreImage.requireBinaryName(name)
                 val output = ByteArrayOutputStream(FlashRestore.FLASH_SIZE)
                 val hash = resolver.openInputStream(uri)?.use { input ->
                     RestoreImage.stage(input, output, ::checkCancelled)
                 } ?: throw ProtocolException("Could not open import source")
+                checkCancelled()
                 selectedImportBytes = output.toByteArray()
-                post { it.copy(busy = false, selectedImport = SelectedImport(name, hash)) }
+                mainHandler.post {
+                    if (!skipDuplicateBinaryImport(hash)) {
+                        state = state.copy(busy = false, selectedImport = SelectedImport(name, hash))
+                        firmwareImportState = firmwareImportState.copy(working = false, cancelling = false, message = "")
+                    }
+                }
             } catch (failure: Exception) {
                 selectedImportBytes = null
-                post {
-                    it.copy(
-                        busy = false, selectedImport = null,
-                        status = if (failure is CancellationException) {
-                            statusMessage("Import validation cancelled", "No backup was added")
-                        } else {
-                            statusMessage("Import file rejected", failure.message ?: "Choose a raw .bin backup file")
-                        }
+                mainHandler.post {
+                    finishFirmwareImport(
+                        if (failure is CancellationException) "Import cancelled. No backups were added."
+                        else "Import file rejected: ${failure.message ?: "Choose a backup ZIP or raw BIN"}",
                     )
                 }
             }
@@ -1739,26 +1774,33 @@ class BackupModel(
     }
 
     fun cancelImport() {
-        if (state.busy || state.selectedImport == null) return
+        if (firmwareImportState.working) {
+            firmwareImportState = firmwareImportState.copy(cancelling = true)
+            cancelled.set(true)
+            return
+        }
         selectedImportBytes = null
         state = state.copy(selectedImport = null)
+        firmwareImportState = FirmwareImportState()
     }
 
     fun saveImportedBackup(name: String) {
         val selected = state.selectedImport ?: return
         if (state.busy || state.libraryLoading) return
+        if (skipDuplicateBinaryImport(selected.sha256)) return
         val identity = name.trim()
         if (identity.isEmpty() || identity.length > BackupStore.MAX_NAME_LENGTH ||
             identity.any { it.code !in 32..126 }
         ) {
-            state = state.copy(
-                status = statusMessage("File name required", "Enter a printable ASCII name of up to ${BackupStore.MAX_NAME_LENGTH} characters")
+            firmwareImportState = firmwareImportState.copy(
+                message = "File name required: use up to ${BackupStore.MAX_NAME_LENGTH} printable ASCII characters",
             )
             return
         }
-        state = state.copy(
-            busy = true,
-            status = statusMessage("Saving imported backup", "Adding the verified file to this app's backup library"),
+        cancelled.set(false)
+        state = state.copy(busy = true)
+        firmwareImportState = firmwareImportState.copy(
+            working = true, cancelling = false, message = "Saving imported backup",
         )
         worker.execute {
             var pending: File? = null
@@ -1768,17 +1810,17 @@ class BackupModel(
                 val file = backupStore.createPending()
                 pending = file
                 BufferedOutputStream(file.outputStream(), 65536).use { it.write(image) }
-                val entry = backupStore.publish(file, selected.sha256, identity)
+                val published = backupStore.publish(file, selected.sha256, identity, ::checkCancelled)
+                val entry = try {
+                    backupStore.classifyImportedBackup(published).also { checkCancelled() }
+                } catch (failure: Exception) {
+                    backupStore.delete(published.id)
+                    throw failure
+                }
                 pending = null
                 selectedImportBytes = null
-                post { current ->
-                    current.copy(
-                        busy = false,
-                        selectedImport = null,
-                        backups = (current.backups + entry)
-                            .sortedWith(compareByDescending<BackupEntry> { it.createdAt }.thenByDescending { it.id }),
-                        status = statusMessage("Backup imported", "The verified file was added to this app's backup library"),
-                    )
+                mainHandler.post {
+                    finishFirmwareImport("Backup imported. SHA-256 verified.", listOf(entry))
                 }
             } catch (failure: Exception) {
                 val deleted = try {
@@ -1788,17 +1830,33 @@ class BackupModel(
                     false
                 }
                 val cleanupMessage = if (deleted) "" else " An incomplete private file could not be removed."
-                post {
-                    it.copy(
-                        busy = false,
-                        status = statusMessage(
-                            "Import failed",
-                            "${failure.message ?: "Could not save the verified backup"}.$cleanupMessage",
-                        ),
+                mainHandler.post {
+                    finishFirmwareImport(
+                        if (failure is CancellationException) "Import cancelled. No backup was added.$cleanupMessage"
+                        else "Import failed: ${failure.message ?: "Could not save the verified backup"}.$cleanupMessage",
                     )
                 }
             }
         }
+    }
+
+    private fun skipDuplicateBinaryImport(sha256: String): Boolean {
+        if (state.backups.none { it.sha256 == sha256 }) return false
+        finishFirmwareImport("Not imported. A backup with this SHA-256 is already in the library.")
+        return true
+    }
+
+    private fun finishFirmwareImport(message: String, entries: List<BackupEntry> = emptyList()) {
+        selectedImportBytes = null
+        state = state.copy(
+            busy = false,
+            selectedImport = null,
+            backups = if (entries.isEmpty()) state.backups else (state.backups + entries)
+                .sortedWith(compareByDescending<BackupEntry> { it.createdAt }.thenByDescending { it.id }),
+        )
+        firmwareImportState = firmwareImportState.copy(
+            working = false, cancelling = false, completed = true, message = message,
+        )
     }
 
     fun selectFamilyManually(family: DeviceFamily) {
@@ -2102,11 +2160,15 @@ class BackupModel(
         backupPreferences.edit { putStringSet(PINNED_BACKUP_IDS, ids) }
     }
 
-    fun showFirmwareExportDialog() {
+    fun showFirmwareExportDialog(id: String? = null) {
         if (state.busy || state.libraryLoading || v15RecoveryState.working || state.backups.isEmpty()) return
+        val entries = if (id == null) BackupStore.uniqueExports(state.backups)
+            else state.backups.filter { it.id == id }
+        if (entries.isEmpty()) return
         firmwareExportState = FirmwareExportState(
             showDialog = true,
-            entries = BackupStore.uniqueExports(state.backups),
+            entries = entries,
+            singleBackup = id != null,
         )
     }
 
@@ -2123,15 +2185,17 @@ class BackupModel(
     fun exportAllFirmware(uri: Uri) {
         if (!firmwareExportState.showDialog || firmwareExportState.working || firmwareExportState.completed) return
         val entries = firmwareExportState.entries
+        if (state.busy || state.libraryLoading || v15RecoveryState.working || entries.isEmpty()) return
         cancelled.set(false)
-        state = state.copy(busy = true, hash = "")
-        firmwareExportState = firmwareExportState.copy(working = true, message = "")
+        state = state.copy(busy = true)
+        val singleBackup = firmwareExportState.singleBackup
+        firmwareExportState = firmwareExportState.copy(working = true, progress = 0, message = "")
         worker.execute {
             val message = try {
                 val destination = application.contentResolver.openOutputStream(uri, "wt")
                     ?: throw IOException("Could not open export destination")
                 var lastProgress = -1
-                backupStore.exportZip(entries, destination, ::checkCancelled) { bytes, total ->
+                val reportProgress: (Long, Long) -> Unit = { bytes, total ->
                     val progress = (bytes * 100 / total).toInt()
                     if (progress != lastProgress) {
                         lastProgress = progress
@@ -2139,6 +2203,11 @@ class BackupModel(
                             firmwareExportState = firmwareExportState.copy(progress = progress)
                         }
                     }
+                }
+                if (singleBackup) {
+                    backupStore.exportBackupZip(entries.single(), destination, ::checkCancelled, reportProgress)
+                } else {
+                    backupStore.exportZip(entries, destination, ::checkCancelled, reportProgress)
                 }
                 "Exported ${entries.size} ${if (entries.size == 1) "backup" else "backups"} to ZIP."
             } catch (failure: Exception) {
@@ -2158,49 +2227,10 @@ class BackupModel(
     }
 
     fun exportBackup(id: String, uri: Uri) {
-        if (state.busy) return
+        if (state.busy || state.libraryLoading || v15RecoveryState.working) return
         if (state.backups.none { it.id == id }) return
-        cancelled.set(false)
-        state = state.copy(
-            busy = true, hash = "", progress = 0f,
-            hashLabel = "SHA-256",
-            status = statusMessage("Exporting backup", "Saving a verified copy to the selected location")
-        )
-        worker.execute {
-            try {
-                backupStore.open(id).use { source ->
-                    val destination = application.contentResolver.openOutputStream(uri, "wt")
-                        ?: throw IOException("Could not open export destination")
-                    destination.buffered().use { output ->
-                        val buffer = ByteArray(65536)
-                        while (true) {
-                            checkCancelled()
-                            val count = source.read(buffer)
-                            if (count < 0) break
-                            output.write(buffer, 0, count)
-                        }
-                    }
-                }
-                post {
-                    it.copy(
-                        busy = false, hash = "",
-                        status = statusMessage("Backup exported successfully", "Saved to the selected location")
-                    )
-                }
-            } catch (failure: Exception) {
-                val deleted = deleteIncompleteDocument(uri)
-                post {
-                    it.copy(
-                        busy = false, status = statusMessage(
-                            "Export failed",
-                            "${failure.message ?: "The selected location could not save the backup"}. " +
-                                    if (deleted) "The incomplete copy was removed; the private backup is unchanged"
-                                    else "Delete the incomplete copy manually; the private backup is unchanged",
-                        )
-                    )
-                }
-            }
-        }
+        showFirmwareExportDialog(id)
+        exportAllFirmware(uri)
     }
 
     /**

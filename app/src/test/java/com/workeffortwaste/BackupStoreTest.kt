@@ -3,6 +3,9 @@ package com.workeffortwaste
 import com.workeffortwaste.protocol.FlashRestore
 import com.workeffortwaste.protocol.Fm1Protocol
 import com.workeffortwaste.protocol.RestoreImage
+import com.google.gson.JsonNull
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -117,6 +120,134 @@ class BackupStoreTest {
 
     @Test fun emptyLibraryDoesNotRequireDirectory() {
         assertTrue(store.list().isEmpty())
+    }
+
+    @Test fun archiveRoundTripPreservesMetadataAndRejectsChangedHash() {
+        val original = store.updateMetadata(save().id, BackupMetadata(
+            classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
+            userFamily = DeviceFamily.SMK37, userFirmwareLabel = "Custom tag",
+        ))
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(original, output)
+        val imported = BackupStore(File(root, "imported")).importZip(output.toByteArray().inputStream()).single()
+        assertEquals(original.metadata, imported.metadata)
+        assertEquals(original.sha256, imported.sha256)
+        assertEquals(original.createdAt, imported.createdAt)
+
+        val corrupted = ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(corrupted).use { zip ->
+            ZipInputStream(output.toByteArray().inputStream()).use { input ->
+                while (true) {
+                    val entry = input.nextEntry ?: break
+                    val data = input.readBytes()
+                    if (entry.name.endsWith(".bin")) data[0] = (data[0] + 1).toByte()
+                    zip.putNextEntry(java.util.zip.ZipEntry(entry.name))
+                    zip.write(data)
+                    zip.closeEntry()
+                }
+            }
+        }
+        val rejected = BackupStore(File(root, "rejected"))
+        assertThrows(IllegalArgumentException::class.java) { rejected.importZip(corrupted.toByteArray().inputStream()) }
+        assertTrue(rejected.list().isEmpty())
+    }
+
+    @Test fun archiveRejectsUnknownFamilyTagsInsteadOfSilentlyDroppingThem() {
+        val original = store.updateMetadata(save().id, BackupMetadata(userFamily = DeviceFamily.FM1))
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(original, output)
+        val contents = archiveEntries(output.toByteArray()).toMutableMap()
+        val jsonName = contents.keys.single { it.endsWith(".json") }
+        val json = JsonParser.parseString(contents.getValue(jsonName).toString(Charsets.UTF_8)).asJsonObject
+        json.getAsJsonObject("metadata").addProperty("userFamily", "FUTURE_DEVICE")
+        contents[jsonName] = json.toString().toByteArray()
+        val target = BackupStore(File(root, "unknown-family-import"))
+        assertThrows(IllegalArgumentException::class.java) {
+            target.importZip(archive(*contents.toList().toTypedArray()).inputStream())
+        }
+        assertTrue(target.list().isEmpty())
+    }
+
+    @Test fun archiveSkipsExistingBackupOnlyWhenAllMetadataMatches() {
+        val original = store.updateMetadata(save().id, BackupMetadata(
+            classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
+            userFirmwareLabel = "Original tag",
+        ))
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(original, output)
+        val packaged = output.toByteArray()
+        assertTrue(store.importZip(packaged.inputStream()).isEmpty())
+        assertEquals(listOf(original), store.list())
+
+        val originalContents = archiveEntries(packaged)
+        val jsonName = originalContents.keys.single { it.endsWith(".json") }
+        val mutations: List<(JsonObject) -> Unit> = listOf(
+            { it.addProperty("createdAt", original.createdAt + 1) },
+            { it.addProperty("firmwareIdentity", "Different name") },
+            { it.getAsJsonObject("metadata").addProperty("userFirmwareLabel", "Different tag") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("explanation", "Different evidence") },
+        )
+        for (mutate in mutations) {
+            val contents = originalContents.toMutableMap()
+            val json = JsonParser.parseString(contents.getValue(jsonName).toString(Charsets.UTF_8)).asJsonObject
+            mutate(json)
+            contents[jsonName] = json.toString().toByteArray(Charsets.UTF_8)
+            val changed = archive(*contents.toList().toTypedArray())
+            assertEquals(1, store.importZip(changed.inputStream()).size)
+            assertTrue(store.importZip(changed.inputStream()).isEmpty())
+        }
+        assertEquals(1 + mutations.size, store.list().size)
+    }
+
+    @Test fun bulkArchiveSkipsDuplicatesWithinBatchAndOnRepeatedImport() {
+        val original = save()
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(original, output)
+        val packaged = output.toByteArray()
+        val bulk = archive("first.zip" to packaged, "duplicate.zip" to packaged)
+        val targetDirectory = File(root, "deduplicated-bulk")
+        val target = BackupStore(targetDirectory)
+        assertEquals(1, target.importZip(bulk.inputStream()).size)
+        assertTrue(target.importZip(bulk.inputStream()).isEmpty())
+        assertEquals(1, target.list().size)
+        assertFalse(targetDirectory.listFiles().orEmpty().any { it.name.endsWith(".partial") })
+    }
+
+    @Test fun archiveRejectsMalformedMetadataFieldsWithoutPublishing() {
+        val entry = store.updateMetadata(save().id, BackupMetadata(userFamily = DeviceFamily.FM1))
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(entry, output)
+        val original = archiveEntries(output.toByteArray())
+        val jsonName = original.keys.single { it.endsWith(".json") }
+        val mutations: List<(JsonObject) -> Unit> = listOf(
+            { it.addProperty("schema", 1.5) },
+            { it.add("sha256", JsonNull.INSTANCE) },
+            { it.addProperty("createdAt", 1700000000000.5) },
+            { it.addProperty("metadata", "not an object") },
+            { it.getAsJsonObject("metadata").addProperty("userFamily", 42) },
+            { it.getAsJsonObject("metadata").addProperty("manualFamilySelection", "UNSUPPORTED") },
+            { it.getAsJsonObject("metadata").addProperty("editorFirmwareLabel", 42) },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").remove("family") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("family", "UNSUPPORTED") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("origin", "UNSUPPORTED") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("confidence", "UNSUPPORTED") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("suggestedFamily", "UNSUPPORTED") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("smkTrimMarkerPresent", "false") },
+            { it.getAsJsonObject("metadata").getAsJsonObject("classification").addProperty("jedecId", "856014") },
+        )
+        val targetDirectory = File(root, "malformed-metadata")
+        val target = BackupStore(targetDirectory)
+        for (mutate in mutations) {
+            val contents = original.toMutableMap()
+            val json = JsonParser.parseString(contents.getValue(jsonName).toString(Charsets.UTF_8)).asJsonObject
+            mutate(json)
+            contents[jsonName] = json.toString().toByteArray(Charsets.UTF_8)
+            assertThrows(IllegalArgumentException::class.java) {
+                target.importZip(archive(*contents.toList().toTypedArray()).inputStream())
+            }
+            assertTrue(target.list().isEmpty())
+            assertTrue(targetDirectory.listFiles().orEmpty().isEmpty())
+        }
     }
 
     @Test fun firmwareIdentitySurvivesRecreationWithoutChangingBackupBytes() {
@@ -272,12 +403,12 @@ class BackupStoreTest {
         val pending = store.createPending().apply { writeBytes(differentBytes) }
         val different = store.publish(pending, differentHash, "My FM-1")
         val entries = listOf(first, duplicate, renamed, different)
-        assertEquals(3, BackupStore.uniqueExports(entries).size)
+        assertEquals(2, BackupStore.uniqueExports(entries).size)
         val destination = ByteArrayOutputStream()
         var completed = 0L
         store.exportZip(entries, destination, progress = { processed, total ->
             assertTrue(processed >= completed)
-            assertEquals(3L * bytes.size, total)
+            assertEquals(2L * bytes.size, total)
             completed = processed
         })
         val extracted = linkedMapOf<String, ByteArray>()
@@ -287,12 +418,124 @@ class BackupStoreTest {
                 assertNull(extracted.put(entry.name, zip.readBytes()))
             }
         }
-        assertEquals(3L * bytes.size, completed)
-        assertEquals(listOf(first, renamed, different).map(BackupStore::exportFileName), extracted.keys.toList())
-        assertArrayEquals(bytes, extracted[BackupStore.exportFileName(first)])
-        assertArrayEquals(bytes, extracted[BackupStore.exportFileName(renamed)])
-        assertArrayEquals(differentBytes, extracted[BackupStore.exportFileName(different)])
+        assertEquals(2L * bytes.size, completed)
+        assertEquals(listOf(first, different).map(BackupStore::exportArchiveName), extracted.keys.toList())
+        val importedStore = BackupStore(File(root, "all-imported"))
+        val imported = importedStore.importZip(destination.toByteArray().inputStream())
+        assertEquals(listOf(first.sha256, different.sha256), imported.map { it.sha256 })
+        assertEquals(listOf(first.createdAt, different.createdAt), imported.map { it.createdAt })
+        importedStore.open(imported[0].id).use { assertArrayEquals(bytes, it.readBytes()) }
+        importedStore.open(imported[1].id).use { assertArrayEquals(differentBytes, it.readBytes()) }
         assertEquals(4, store.list().size)
+    }
+
+    private fun archive(vararg entries: Pair<String, ByteArray>): ByteArray = ByteArrayOutputStream().apply {
+        java.util.zip.ZipOutputStream(this).use { zip ->
+            entries.forEach { (name, data) ->
+                zip.putNextEntry(java.util.zip.ZipEntry(name))
+                zip.write(data)
+                zip.closeEntry()
+            }
+        }
+    }.toByteArray()
+
+    private fun archiveEntries(bytes: ByteArray): Map<String, ByteArray> {
+        val entries = linkedMapOf<String, ByteArray>()
+        ZipInputStream(bytes.inputStream()).use { input ->
+            while (true) {
+                val entry = input.nextEntry ?: break
+                entries[entry.name] = input.readBytes()
+            }
+        }
+        return entries
+    }
+
+    @Test fun archiveRequiresIdentifierAndMatchingJsonAndNeverInfersUnpairedBins() {
+        val entry = save()
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(entry, output)
+        val packaged = linkedMapOf<String, ByteArray>()
+        ZipInputStream(output.toByteArray().inputStream()).use { input ->
+            while (true) {
+                val item = input.nextEntry ?: break
+                packaged[item.name] = input.readBytes()
+            }
+        }
+        val jsonName = packaged.keys.single { it.endsWith(".json") }
+        val binName = packaged.keys.single { it.endsWith(".bin") }
+        val target = BackupStore(File(root, "pairs"))
+        for (invalid in listOf(
+            archive(binName to bytes),
+            archive(jsonName to "{}".toByteArray(), binName to bytes),
+            archive(jsonName to packaged.getValue(jsonName)),
+            archive(jsonName to packaged.getValue(jsonName), "different.bin" to bytes),
+        )) {
+            assertThrows(Exception::class.java) { target.importZip(invalid.inputStream()) }
+            assertTrue(target.list().isEmpty())
+        }
+        val imported = target.importZip(archive(*packaged.toList().toTypedArray(), "unpaired.bin" to bytes).inputStream())
+        assertEquals(1, imported.size)
+    }
+
+    @Test fun archiveRejectsUnsafeOversizedAndNestedInputWithoutPublishing() {
+        val target = BackupStore(File(root, "invalid-archives"))
+        for (invalid in listOf(
+            archive("../image.bin" to bytes),
+            archive("/image.bin" to bytes),
+            archive("hidden/" to bytes),
+            archive("image.bin" to ByteArray(FlashRestore.FLASH_SIZE * 2 + 1)),
+            archive("outer.zip" to archive("inner.zip" to archive("image.bin" to bytes))),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) { target.importZip(invalid.inputStream()) }
+            assertTrue(target.list().isEmpty())
+        }
+    }
+
+    @Test fun archiveCancellationCleansStagedAndPublishedBackups() {
+        val output = ByteArrayOutputStream()
+        store.exportZip(listOf(save()), output)
+        val targetDirectory = File(root, "cancelled-import")
+        val target = BackupStore(targetDirectory)
+        var cancel = false
+        assertThrows(CancellationException::class.java) {
+            target.importZip(output.toByteArray().inputStream(),
+                { if (cancel) throw CancellationException() }, { cancel = true })
+        }
+        assertTrue(target.list().isEmpty())
+        assertTrue(targetDirectory.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test fun bulkImportRollsBackEarlierPublicationsWhenLaterMetadataIsInvalid() {
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(save(), output)
+        val valid = output.toByteArray()
+        val contents = linkedMapOf<String, ByteArray>()
+        ZipInputStream(valid.inputStream()).use { input ->
+            while (true) {
+                val item = input.nextEntry ?: break
+                contents[item.name] = input.readBytes()
+            }
+        }
+        val jsonName = contents.keys.single { it.endsWith(".json") }
+        val json = com.google.gson.JsonParser.parseString(contents.getValue(jsonName).toString(Charsets.UTF_8)).asJsonObject
+        json.addProperty("firmwareIdentity", "x".repeat(BackupStore.MAX_NAME_LENGTH + 1))
+        contents[jsonName] = json.toString().toByteArray()
+        val invalid = archive(*contents.toList().toTypedArray())
+        val targetDirectory = File(root, "rolled-back-import")
+        val target = BackupStore(targetDirectory)
+        assertThrows(IllegalArgumentException::class.java) {
+            target.importZip(archive("valid.zip" to valid, "invalid.zip" to invalid).inputStream())
+        }
+        assertTrue(target.list().isEmpty())
+        assertTrue(targetDirectory.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test fun rawImportClassificationUsesLegacyFlashHeuristics() {
+        val original = saveLegacy("User chosen label", "2_1_0_0")
+        val classified = store.classifyImportedBackup(original)
+        assertEquals(DeviceFamily.POCKETX_BLACKBOX, classified.taggedFamily)
+        assertEquals(original.sha256, classified.sha256)
+        assertEquals(original.firmwareIdentity, classified.firmwareIdentity)
     }
 
     @Test fun zipRejectsDamagedFirmwareAndPropagatesWriteFailures() {

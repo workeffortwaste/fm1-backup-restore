@@ -77,4 +77,30 @@ class FirmwareExportDialogTest {
         }
         compose.onNodeWithText("Export").assertIsNotEnabled()
     }
+
+    @Test fun importKeepsSelectionProgressAndResultInOneDialog() {
+        val state = mutableStateOf(FirmwareImportState(showDialog = true))
+        var chosen = 0
+        var closed = 0
+        compose.setContent {
+            MaterialExpressiveTheme {
+                FirmwareImportDialog(state.value, null, "", {}, false,
+                    { chosen++ }, {}, { closed++ })
+            }
+        }
+        compose.onNodeWithText("Choose file").performClick()
+        compose.runOnIdle {
+            assertEquals(1, chosen)
+            state.value = state.value.copy(working = true, message = "Verifying import")
+        }
+        compose.onNodeWithText("Verifying import").assertIsDisplayed()
+        compose.onNodeWithText("Choose file").assertDoesNotExist()
+        compose.runOnIdle {
+            state.value = state.value.copy(working = false, completed = true,
+                message = "Imported 2 verified backups.")
+        }
+        compose.onNodeWithText("Imported 2 verified backups.").assertIsDisplayed()
+        compose.onNodeWithText("Close").performClick()
+        compose.runOnIdle { assertEquals(1, closed) }
+    }
 }
