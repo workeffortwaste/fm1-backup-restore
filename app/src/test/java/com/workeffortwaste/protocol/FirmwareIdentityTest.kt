@@ -3,7 +3,7 @@ package com.workeffortwaste.protocol
 import org.junit.Assert.*
 import org.junit.Test
 
-/** Covers read-only identity requests and strict parsing of FM-1 MIDI replies and captures. */
+/** Covers read-only identity requests and strict parsing of supported-device MIDI replies/captures. */
 class FirmwareIdentityTest {
     private fun editorReply(label: String): ByteArray =
         byteArrayOf(0xf0.toByte(), 0x7d, 0x46, 0x4c, 1) +

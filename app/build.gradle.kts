@@ -107,6 +107,8 @@ val adb = extensions.getByType<com.android.build.api.variant.ApplicationAndroidC
 val themeScreenshotOutput = rootProject.projectDir.resolve("screenshots")
 
 val captureThemeScreenshots = tasks.register<Exec>("captureThemeScreenshots") {
+    group = "verification"
+    description = "Captures app screenshots on the connected emulator."
     dependsOn("installDebug", "installDebugAndroidTest")
     commandLine(
         adb, "shell", "am", "instrument", "-w", "-e", "class",

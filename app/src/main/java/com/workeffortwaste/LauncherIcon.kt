@@ -37,7 +37,10 @@ internal object LauncherIcon {
     }
 
     internal fun componentName(context: Context, palette: Fm1Palette) =
-        ComponentName(context, "${context.packageName}.${palette.launcherAlias}")
+        ComponentName(
+            context.packageName,
+            "${LauncherIcon::class.java.name.substringBeforeLast('.')}.${palette.launcherAlias}",
+        )
 
     private fun isEnabled(
         packageManager: PackageManager,

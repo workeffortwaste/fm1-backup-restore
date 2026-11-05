@@ -280,7 +280,7 @@ class RestoreTest {
         assertFalse(mutationStarted)
         assertTrue(device.mutations.isEmpty())
         assertEquals(8064, device.commands.count { it.code == 0xfd05 })
-        assertEquals(FlashRestore.WRITABLE_SIZE.toLong(), progress.last { it.first == "Writing to FM-1 flash" }.second)
+        assertEquals(FlashRestore.WRITABLE_SIZE.toLong(), progress.last { it.first == "Writing to flash" }.second)
         assertEquals(
             FlashRestore.WRITABLE_SIZE.toLong(),
             progress.last { it.first == "Verifying: reading back written data" }.second,
@@ -303,12 +303,12 @@ class RestoreTest {
     @Test
     fun progressReportsExplicitTotalsAndCompletesEveryPhase() {
         val phases = linkedMapOf(
-            "Writing to FM-1 flash" to FlashRestore.WRITABLE_SIZE.toLong(),
+            "Writing to flash" to FlashRestore.WRITABLE_SIZE.toLong(),
             "Verifying: reading back written data" to FlashRestore.WRITABLE_SIZE.toLong(),
         )
         val lastBytes = linkedMapOf<String, Long>()
         val increments = mapOf(
-            "Writing to FM-1 flash" to FlashRestore.SECTOR_SIZE.toLong(),
+            "Writing to flash" to FlashRestore.SECTOR_SIZE.toLong(),
             "Verifying: reading back written data" to FlashRestore.PAGE_SIZE.toLong(),
         )
         restore(MemoryScsi(image), progress = { phase, bytes, total ->

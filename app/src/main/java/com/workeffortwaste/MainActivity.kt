@@ -35,6 +35,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -515,8 +516,15 @@ class MainActivity : ComponentActivity() {
                         mutableStateOf(backupMilestonePromptDueAtLaunch)
                     }
                     var showSettings by rememberSaveable { mutableStateOf(false) }
+                    var hideIncompatibleBackups by rememberSaveable {
+                        mutableStateOf(setupPreferences.getBoolean("hide_incompatible_backups", false))
+                    }
+                    var hideDeviceTags by rememberSaveable {
+                        mutableStateOf(setupPreferences.getBoolean("hide_device_tags", false))
+                    }
+                    val legacyBackupUpgrade = model?.state?.legacyBackupUpgrade
                     BackHandler(enabled = showSettings) { showSettings = false }
-                    if (showBackupMilestonePrompt && resultSummary == null) {
+                    if (legacyBackupUpgrade == null && showBackupMilestonePrompt && resultSummary == null) {
                         AlertDialog(
                             onDismissRequest = {
                                 showBackupMilestonePrompt = false
@@ -558,7 +566,7 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                    resultSummary?.let { summary ->
+                    resultSummary?.takeIf { legacyBackupUpgrade == null }?.let { summary ->
                         AlertDialog(
                             onDismissRequest = { resultSummary = null },
                             title = { Text("Notification") },
@@ -575,7 +583,11 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                    if (showWelcome) {
+                    if (legacyBackupUpgrade != null) {
+                        UpdatingSplashScreen(
+                            progress = legacyBackupUpgrade.fraction,
+                        )
+                    } else if (showWelcome) {
                         WelcomeScreen(darkTheme = darkTheme) {
                             setupPreferences.edit { putBoolean("complete", true) }
                             model?.refresh()
@@ -614,6 +626,16 @@ class MainActivity : ComponentActivity() {
                                             putString("fm1_palette", selected.preferenceValue)
                                         }
                                     },
+                                    hideIncompatibleBackups = hideIncompatibleBackups,
+                                    onHideIncompatibleBackupsChange = { hidden ->
+                                        hideIncompatibleBackups = hidden
+                                        setupPreferences.edit { putBoolean("hide_incompatible_backups", hidden) }
+                                    },
+                                    hideDeviceTags = hideDeviceTags,
+                                    onHideDeviceTagsChange = { hidden ->
+                                        hideDeviceTags = hidden
+                                        setupPreferences.edit { putBoolean("hide_device_tags", hidden) }
+                                    },
                                 )
                             } else {
                                 val connectedModel = model
@@ -624,6 +646,8 @@ class MainActivity : ComponentActivity() {
                                     onSettings = { showSettings = true },
                                     titleColor = mainTitleColor,
                                     darkTheme = darkTheme,
+                                    hideIncompatibleBackups = hideIncompatibleBackups,
+                                    hideDeviceTags = hideDeviceTags,
                                 )
                             }
                         }
@@ -644,7 +668,7 @@ class MainActivity : ComponentActivity() {
     private fun installAppUpdate() {
         if (!updateDeviceIdle) {
             updater.installationFailed(
-                IllegalStateException("Wait for the FM-1 operation to finish before installing."),
+                IllegalStateException("Wait for the device operation to finish before installing."),
             )
             return
         }
@@ -857,6 +881,10 @@ class MainActivity : ComponentActivity() {
         onAppearanceThemeChange: (AppearanceTheme) -> Unit,
         fm1Palette: Fm1Palette,
         onFm1PaletteChange: (Fm1Palette) -> Unit,
+        hideIncompatibleBackups: Boolean,
+        onHideIncompatibleBackupsChange: (Boolean) -> Unit,
+        hideDeviceTags: Boolean,
+        onHideDeviceTagsChange: (Boolean) -> Unit,
     ) {
         val onNotificationsClick = notificationSettingsAction()
         val appIcon = remember { LauncherIcon.selected(this@MainActivity) }
@@ -913,6 +941,41 @@ class MainActivity : ComponentActivity() {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionHeading("Permissions")
                         SetupOptions(darkTheme, ::requestScreenOffTransfers, onNotificationsClick)
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SectionHeading("Backups")
+                        val listContainerColor = if (darkTheme) {
+                            MaterialTheme.colorScheme.surfaceContainerHigh
+                        } else {
+                            MaterialTheme.colorScheme.surfaceBright
+                        }
+                        val segmentedColors = ListItemDefaults.segmentedColors(containerColor = listContainerColor)
+                        Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                            SegmentedListItem(
+                                onClick = { onHideIncompatibleBackupsChange(!hideIncompatibleBackups) },
+                                shapes = ListItemDefaults.segmentedShapes(index = 0, count = 2),
+                                colors = segmentedColors,
+                                trailingContent = {
+                                    Switch(
+                                        checked = hideIncompatibleBackups,
+                                        onCheckedChange = onHideIncompatibleBackupsChange,
+                                    )
+                                },
+                                content = { Text("Hide incompatible backups") },
+                            )
+                            SegmentedListItem(
+                                onClick = { onHideDeviceTagsChange(!hideDeviceTags) },
+                                shapes = ListItemDefaults.segmentedShapes(index = 1, count = 2),
+                                colors = segmentedColors,
+                                trailingContent = {
+                                    Switch(
+                                        checked = hideDeviceTags,
+                                        onCheckedChange = onHideDeviceTagsChange,
+                                    )
+                                },
+                                content = { Text("Hide device tags") },
+                            )
+                        }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         SectionHeading("Appearance")
@@ -1135,8 +1198,26 @@ class MainActivity : ComponentActivity() {
         onSettings: () -> Unit,
         titleColor: Color,
         darkTheme: Boolean,
+        hideIncompatibleBackups: Boolean,
+        hideDeviceTags: Boolean,
     ) {
         val state = model.state
+        val targetFamily = if (state.ready &&
+            state.deviceClassification.origin != FamilyEvidenceOrigin.CONFLICT
+        ) state.effectiveDeviceFamily else DeviceFamily.UNKNOWN
+        val manualChoiceNeeded = state.requiresManualFamilySelection
+        val manualPromptKey = if (state.ready && state.deviceMode == DeviceMode.DOWNLOAD) {
+            state.device?.deviceName ?: "ready-recovery-session"
+        } else null
+        val visibleBackups = state.backups.filter { entry ->
+            !hideIncompatibleBackups || targetFamily == DeviceFamily.UNKNOWN ||
+                    compatibility(entry.taggedFamily, targetFamily) != BackupCompatibility.INCOMPATIBLE
+        }
+        val visiblePinnedBackups = visibleBackups.filter { it.id in state.pinnedBackupIds }
+        val visibleUnpinnedBackups = visibleBackups.filterNot { it.id in state.pinnedBackupIds }
+        val relationFor: (BackupEntry) -> BackupCompatibility = { entry ->
+            compatibility(entry.taggedFamily, targetFamily)
+        }
         val v15RecoveryState = model.v15RecoveryState
         val bootloaderVerificationState = model.bootloaderVerificationState
         val firmwareExportState = model.firmwareExportState
@@ -1170,6 +1251,11 @@ class MainActivity : ComponentActivity() {
         var shaSource by rememberSaveable { mutableStateOf<String?>(null) }
         var renameSource by rememberSaveable { mutableStateOf<String?>(null) }
         var renameName by rememberSaveable { mutableStateOf("") }
+        var tagSource by rememberSaveable { mutableStateOf<String?>(null) }
+        var tagFirmwareLabel by rememberSaveable { mutableStateOf("") }
+        var showManualFamilyPicker by rememberSaveable { mutableStateOf(false) }
+        var manualFamilyChoice by rememberSaveable { mutableStateOf<DeviceFamily?>(null) }
+        var manualPromptedDevice by rememberSaveable { mutableStateOf<String?>(null) }
         var importName by rememberSaveable { mutableStateOf("") }
         var exportSource by rememberSaveable { mutableStateOf<String?>(null) }
         var backupActions by rememberSaveable { mutableStateOf<String?>(null) }
@@ -1238,21 +1324,39 @@ class MainActivity : ComponentActivity() {
                     renameSource = entry.id
                 }
 
+                BackupAction.TAG -> tagSource = entry.id
                 BackupAction.DELETE -> deleteSource = entry.id
+            }
+        }
+        LaunchedEffect(tagSource) {
+            val entry = state.backups.firstOrNull { it.id == tagSource }
+            tagFirmwareLabel = entry?.metadata?.userFirmwareLabel.orEmpty()
+        }
+        LaunchedEffect(manualPromptKey, state.requiresManualFamilySelection) {
+            if (manualPromptKey == null) {
+                manualPromptedDevice = null
+            } else if (manualChoiceNeeded && manualPromptedDevice != manualPromptKey) {
+                manualPromptedDevice = manualPromptKey
+                manualFamilyChoice = state.deviceClassification.suggestedFamily
+                showManualFamilyPicker = true
             }
         }
         val pickerAvailable = !choosingFile && !state.libraryLoading && savedRestore == null && deleteSource == null &&
             state.selectedImport == null && !firmwareExportState.showDialog
         val editable = !state.busy && !v15RecoveryState.working && pickerAvailable
         val operationEligible = !state.busy && state.ready && batteryExempt && !state.libraryLoading &&
-            !v15RecoveryState.working && !firmwareExportState.showDialog
+            !v15RecoveryState.working && !firmwareExportState.showDialog && state.canBackUpWithFamily
         if (savedRestore != null) {
             val savedEntry = state.backups.find { it.id == savedRestore }
+            val savedCompatibility = savedEntry?.let(relationFor) ?: BackupCompatibility.UNKNOWN
             RestoreConfirmationDialog(
-                backupName = savedEntry?.firmwareIdentity ?: "Firmware unknown",
+                backupName = savedEntry?.firmwareIdentity.orEmpty(),
                 backupDate = savedEntry?.let { backupDate(it.id) },
                 sha256 = savedEntry?.sha256,
-                restoreEnabled = operationEligible,
+                restoreEnabled = operationEligible && savedCompatibility == BackupCompatibility.COMPATIBLE,
+                targetFamily = targetFamily,
+                manuallySelected = state.deviceClassification.origin == FamilyEvidenceOrigin.MANUAL ||
+                    state.manualFamilySelection != null,
                 onConfirm = {
                     onButtonClick {
                         val saved = savedRestore
@@ -1262,6 +1366,72 @@ class MainActivity : ComponentActivity() {
                 },
                 onDismiss = {
                     onButtonClick { savedRestore = null }
+                },
+            )
+        }
+        if (showManualFamilyPicker) {
+            val classification = state.deviceClassification
+            val conflicting = classification.origin == FamilyEvidenceOrigin.CONFLICT
+            AlertDialog(
+                onDismissRequest = {
+                    showManualFamilyPicker = false
+                    manualFamilyChoice = null
+                },
+                title = {
+                    Text(
+                        if (conflicting) "Conflicting device evidence — Select manually for backup only"
+                        else "Device not recognised",
+                    )
+                },
+                text = {
+                    Column(
+                        modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                            if (conflicting) {
+                                Text("M-UPGRADE: ${classification.rawMidiIdentity ?: "Unknown"}")
+                                Text("Boot SPI: ${classification.spiSetting ?: "Unknown"}")
+                                Text("JEDEC: ${classification.jedecId?.let { "%06X".format(it) } ?: "Unknown"}")
+                                Text("Trim: ${if (classification.smkTrimMarkerPresent) "Present" else "Not found"}")
+                                classification.suggestedFamily?.let { suggested ->
+                                    Text("Suggested by SPI + JEDEC: ${suggested.displayName}. Confirm manually.")
+                                }
+                        }
+                        DeviceFamily.entries.filter { it != DeviceFamily.UNKNOWN }.forEach { family ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().clickable { manualFamilyChoice = family },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(
+                                    selected = manualFamilyChoice == family,
+                                    onClick = { manualFamilyChoice = family },
+                                )
+                                Text(family.displayName)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = manualFamilyChoice != null && !state.busy,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        onClick = {
+                            manualFamilyChoice?.let(model::selectFamilyManually)
+                            showManualFamilyPicker = false
+                            manualFamilyChoice = null
+                        },
+                    ) {
+                        Text(if (conflicting) "Select manually for backup only" else "Select manually and continue")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            showManualFamilyPicker = false
+                            manualFamilyChoice = null
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("Cancel") }
                 },
             )
         }
@@ -1289,7 +1459,7 @@ class MainActivity : ComponentActivity() {
                 },
                 confirmButton = {
                     TextButton(
-                        enabled = valid && !state.busy,
+                        enabled = valid,
                         modifier = Modifier.heightIn(min = 48.dp),
                         onClick = { onButtonClick { model.saveImportedBackup(importName) } },
                     ) { Text("Save") }
@@ -1310,10 +1480,9 @@ class MainActivity : ComponentActivity() {
                     text = {
                         SelectionContainer {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text(
-                                    entry.firmwareIdentity ?: "Firmware unknown",
-                                    style = MaterialTheme.typography.titleSmall
-                                )
+                                entry.firmwareIdentity?.takeIf { it.isNotBlank() }?.let {
+                                    Text(it, style = MaterialTheme.typography.titleSmall)
+                                }
                                 Text(entry.sha256)
                             }
                         }
@@ -1328,6 +1497,52 @@ class MainActivity : ComponentActivity() {
                     },
                 )
             }
+        }
+        tagSource?.let { id ->
+            val entry = state.backups.firstOrNull { it.id == id }
+            val metadata = entry?.metadata ?: BackupMetadata()
+            val validTag = tagFirmwareLabel.length <= BackupStore.MAX_NAME_LENGTH &&
+                    tagFirmwareLabel.none { it.code < 32 || it.code == 127 }
+            AlertDialog(
+                onDismissRequest = { tagSource = null },
+                title = { Text("Custom tag") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Give your backup a custom tag so you know which device it came from.")
+                        OutlinedTextField(
+                            value = tagFirmwareLabel,
+                            onValueChange = { tagFirmwareLabel = it },
+                            label = { Text("Device tag") },
+                            singleLine = true,
+                            isError = !validTag,
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = entry != null && validTag && !state.busy,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        onClick = {
+                            val customTag = tagFirmwareLabel.trim().ifEmpty { null }
+                            onButtonClick {
+                                model.updateBackupMetadata(
+                                    id,
+                                    metadata.copy(
+                                        userFirmwareLabel = customTag,
+                                    ),
+                                )
+                                tagSource = null
+                            }
+                        },
+                    ) { Text("Save") }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { tagSource = null },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text("Cancel") }
+                },
+            )
         }
         renameSource?.let { id ->
             val valid = renameName.isNotBlank() && renameName.length <= BackupStore.MAX_NAME_LENGTH &&
@@ -1369,7 +1584,9 @@ class MainActivity : ComponentActivity() {
                 title = { Text("Delete this backup?") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(entry?.firmwareIdentity ?: "Firmware unknown", style = MaterialTheme.typography.titleSmall)
+                        entry?.firmwareIdentity?.takeIf { it.isNotBlank() }?.let {
+                            Text(it, style = MaterialTheme.typography.titleSmall)
+                        }
                         Text(backupDate(id))
                         Text("This permanently deletes the private copy from this app. Exported copies are not deleted.")
                     }
@@ -1409,7 +1626,7 @@ class MainActivity : ComponentActivity() {
                 }
             },
             diagnostics = usbDiagnostics,
-            verifyEnabled = state.ready && !state.busy && !v15RecoveryState.working &&
+                verifyEnabled = state.isVerifiedFm1RecoverySession && !state.busy && !v15RecoveryState.working &&
                     !firmwareExportState.showDialog && !bootloaderVerificationState.showDialog,
             onVerify = {
                 onButtonClick {
@@ -1447,7 +1664,7 @@ class MainActivity : ComponentActivity() {
                                     contentDescription = null,
                                 )
                             },
-                            text = { Text("Backup FM-1") },
+                            text = { Text("Backup ${state.connectedDeviceDisplayName}") },
                         )
                     }
                 },
@@ -1550,7 +1767,9 @@ class MainActivity : ComponentActivity() {
                                     painter = painterResource(
                                         if (state.ready) R.drawable.ic_eject else R.drawable.ic_refresh,
                                     ),
-                                    contentDescription = if (state.ready) "Return FM-1 to MIDI mode" else "Refresh",
+                                    contentDescription = if (state.ready) {
+                                        "Return ${state.connectedDeviceDisplayName} to MIDI mode"
+                                    } else "Refresh",
                                 )
                             }
                             Box {
@@ -1596,18 +1815,23 @@ class MainActivity : ComponentActivity() {
                                                 onButtonClick(model::showFirmwareExportDialog)
                                             },
                                         )
-                                        DropdownMenuItem(
-                                            text = { Text("Create recovery snapshot") },
-                                            shape = MenuDefaults.middleItemShape,
-                                            enabled = editable && batteryExempt,
-                                            onClick = {
-                                                showAppMenu = false
-                                                model.showV15RecoveryDialog()
-                                            },
-                                        )
+                                        if (state.canOfferFm1RecoverySnapshot) {
+                                            DropdownMenuItem(
+                                                text = { Text("Create FM-1 recovery snapshot") },
+                                                shape = MenuDefaults.middleItemShape,
+                                                enabled = editable && batteryExempt,
+                                                onClick = {
+                                                    showAppMenu = false
+                                                    model.showV15RecoveryDialog()
+                                                },
+                                            )
+                                        }
                                         DropdownMenuItem(
                                             text = { Text("Settings") },
                                             shape = MenuDefaults.middleItemShape,
+                                            modifier = Modifier.semantics {
+                                                contentDescription = "Open app settings"
+                                            },
                                             onClick = {
                                                 showAppMenu = false
                                                 onSettings()
@@ -1683,12 +1907,33 @@ class MainActivity : ComponentActivity() {
                             }
                             val connectingToDevice = state.busy && (
                                     state.findingBootloader ||
-                                            state.status.heading.startsWith("Returning FM-1 to MIDI mode") ||
+                                            state.status.heading.startsWith("Returning ") ||
                                             state.status.heading.startsWith("Reading FM-1 firmware identity") ||
                                             state.status.heading.startsWith("Waiting for USB permission") ||
-                                            state.status.heading.startsWith("Waiting for FM-1") ||
-                                            state.status.heading.startsWith("Connecting to FM-1")
+                                            state.status.heading.startsWith("Waiting for ") ||
+                                            state.status.heading.startsWith("Connecting to ")
                                     )
+                            if (state.ready && state.deviceMode == DeviceMode.DOWNLOAD &&
+                                (manualChoiceNeeded || state.deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        manualFamilyChoice = state.deviceClassification.suggestedFamily
+                                        showManualFamilyPicker = true
+                                    },
+                                    enabled = editable,
+                                    shapes = ButtonDefaults.shapes(),
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                                ) {
+                                    Text(
+                                        if (state.deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT) {
+                                            "Select manually for backup only"
+                                        } else {
+                                            "Select device family"
+                                        },
+                                    )
+                                }
+                            }
                             if (!state.busy && !state.restoreRetryAvailable &&
                                 (state.deviceMode == DeviceMode.MIDI || (state.device != null && !state.ready))
                             ) {
@@ -1719,7 +1964,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     item {
-                        if (state.pinnedBackups.isNotEmpty()) {
+                        if (visiblePinnedBackups.isNotEmpty()) {
                             Column(
                                 modifier = Modifier.padding(bottom = 8.dp - ListItemDefaults.SegmentedGap),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -1728,29 +1973,33 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    itemsIndexed(state.pinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
+                    itemsIndexed(visiblePinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
                         BackupEntryRow(
                             entry = entry,
                             index = index,
-                            count = state.pinnedBackups.size,
+                            count = visiblePinnedBackups.size,
                             pinned = true,
                             darkTheme = darkTheme,
                             actionsOpen = backupActions == entry.id,
-                            enabled = editable,
-                            operationEligible = operationEligible,
+                            enabled = editable && relationFor(entry) != BackupCompatibility.INCOMPATIBLE,
+                            managementEnabled = editable,
+                            operationEligible = operationEligible &&
+                                    relationFor(entry) == BackupCompatibility.COMPATIBLE,
                             pickerAvailable = pickerAvailable,
+                                hideDeviceTag = hideDeviceTags,
                             onOpenActions = { backupActions = entry.id },
                             onDismissActions = { backupActions = null },
                             onAction = { action, selected -> handleBackupAction(action, selected) },
                         )
                     }
-                    if (state.unpinnedBackups.isNotEmpty() || state.backups.isEmpty() ||
-                        state.libraryLoading || state.libraryError.isNotEmpty()
+                    if (visibleUnpinnedBackups.isNotEmpty() || state.libraryLoading ||
+                        state.libraryError.isNotEmpty() ||
+                        (state.backups.isEmpty() && state.canOfferFm1RecoverySnapshot)
                     ) {
                         item {
                             Column(
                                 modifier = Modifier.padding(
-                                    top = if (state.pinnedBackups.isEmpty()) 0.dp
+                                    top = if (visiblePinnedBackups.isEmpty()) 0.dp
                                     else 24.dp - ListItemDefaults.SegmentedGap,
                                     bottom = if (state.backups.isEmpty()) 0.dp else 8.dp - ListItemDefaults.SegmentedGap,
                                 ),
@@ -1759,7 +2008,9 @@ class MainActivity : ComponentActivity() {
                                 SectionHeading("Backups")
                                 if (state.libraryLoading) Text("Loading verified backups…")
                                 if (state.libraryError.isNotEmpty()) Text(state.libraryError)
-                                if (!state.libraryLoading && state.libraryError.isEmpty() && state.backups.isEmpty()) {
+                                if (!state.libraryLoading && state.libraryError.isEmpty() && state.backups.isEmpty() &&
+                                    state.canOfferFm1RecoverySnapshot
+                                ) {
                                     InfoBox {
                                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1767,31 +2018,34 @@ class MainActivity : ComponentActivity() {
                                                     "Already started flashing custom firmware?",
                                                     style = MaterialTheme.typography.titleSmall,
                                                 )
-                                                InfoBoxDetail("Generate a stock v15 snapshot even if you didn't save a backup first.")
+                                                InfoBoxDetail("Generate a stock v15 snapshot for your FM-1 even if you didn't save a backup first.")
                                             }
                                             Button(
                                                 onClick = { onButtonClick(model::showV15RecoveryDialog) },
                                                 enabled = editable,
                                                 shapes = ButtonDefaults.shapes(),
                                                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                                            ) { Text("Create v15 recovery snapshot") }
+                                            ) { Text("Create FM-1 v15 recovery snapshot") }
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    itemsIndexed(state.unpinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
+                    itemsIndexed(visibleUnpinnedBackups, key = { _, entry -> entry.id }) { index, entry ->
                         BackupEntryRow(
                             entry = entry,
                             index = index,
-                            count = state.unpinnedBackups.size,
+                            count = visibleUnpinnedBackups.size,
                             pinned = false,
                             darkTheme = darkTheme,
                             actionsOpen = backupActions == entry.id,
-                            enabled = editable,
-                            operationEligible = operationEligible,
+                            enabled = editable && relationFor(entry) != BackupCompatibility.INCOMPATIBLE,
+                            managementEnabled = editable,
+                            operationEligible = operationEligible &&
+                                    relationFor(entry) == BackupCompatibility.COMPATIBLE,
                             pickerAvailable = pickerAvailable,
+                                hideDeviceTag = hideDeviceTags,
                             onOpenActions = { backupActions = entry.id },
                             onDismissActions = { backupActions = null },
                             onAction = { action, selected -> handleBackupAction(action, selected) },
@@ -1802,7 +2056,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private enum class BackupAction { RESTORE, EXPORT, TOGGLE_PIN, SHA, RENAME, DELETE }
+    private enum class BackupAction { RESTORE, EXPORT, TOGGLE_PIN, SHA, RENAME, TAG, DELETE }
 
     /** Shows backup metadata and forwards menu choices to the screen that owns the related dialogs. */
     @Composable
@@ -1814,13 +2068,15 @@ class MainActivity : ComponentActivity() {
         darkTheme: Boolean,
         actionsOpen: Boolean,
         enabled: Boolean,
+        managementEnabled: Boolean,
         operationEligible: Boolean,
         pickerAvailable: Boolean,
+        hideDeviceTag: Boolean,
         onOpenActions: () -> Unit,
         onDismissActions: () -> Unit,
         onAction: (BackupAction, BackupEntry) -> Unit,
     ) {
-        val label = backupLabel(entry.id)
+        val label = backupLabel(entry.id, entry.taggedFamily.metadataName)
         val listContainerColor = if (darkTheme) MaterialTheme.colorScheme.surfaceContainerHigh
         else MaterialTheme.colorScheme.surfaceBright
         SegmentedListItem(
@@ -1835,13 +2091,48 @@ class MainActivity : ComponentActivity() {
                 containerColor = listContainerColor,
                 disabledContainerColor = listContainerColor,
             ),
-            content = { Text(entry.firmwareIdentity ?: "Firmware unknown") },
-            supportingContent = { Text("${backupDate(entry.id)} \u00b7 1 MiB") },
+            content = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    entry.firmwareIdentity?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            it,
+                            modifier = Modifier.weight(1f, fill = false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (!hideDeviceTag && entry.taggedFamily != DeviceFamily.UNKNOWN) {
+                        val tagAlpha = if (enabled) 1f else 0.38f
+                        Surface(
+                            shape = MaterialTheme.shapes.extraSmall,
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = tagAlpha),
+                        ) {
+                            Text(
+                                entry.taggedFamily.backupTagLabel,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = tagAlpha),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            },
+            supportingContent = {
+                val details = listOfNotNull(
+                    backupDate(entry.id),
+                    entry.identityLine().takeIf { it.isNotBlank() },
+                ).joinToString(" \u00b7 ")
+                Text(details, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            },
             trailingContent = {
                 Box {
                     FilledTonalIconButton(
                         onClick = onOpenActions,
-                        enabled = enabled,
+                        enabled = managementEnabled && enabled,
                         shape = MaterialTheme.shapes.medium,
                         modifier = Modifier.size(48.dp).semantics {
                             contentDescription = "Actions for $label"
@@ -1860,13 +2151,13 @@ class MainActivity : ComponentActivity() {
                             DropdownMenuItem(
                                 text = { Text("Export") },
                                 shape = MenuDefaults.middleItemShape,
-                                enabled = enabled,
+                                enabled = managementEnabled,
                                 onClick = { onAction(BackupAction.EXPORT, entry) },
                             )
                             DropdownMenuItem(
                                 text = { Text(if (pinned) "Unpin" else "Pin") },
                                 shape = MenuDefaults.middleItemShape,
-                                enabled = enabled,
+                                enabled = managementEnabled,
                                 onClick = { onAction(BackupAction.TOGGLE_PIN, entry) },
                             )
                             DropdownMenuItem(
@@ -1877,13 +2168,19 @@ class MainActivity : ComponentActivity() {
                             DropdownMenuItem(
                                 text = { Text("Rename") },
                                 shape = MenuDefaults.middleItemShape,
-                                enabled = enabled,
+                                enabled = managementEnabled,
                                 onClick = { onAction(BackupAction.RENAME, entry) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Tag") },
+                                shape = MenuDefaults.middleItemShape,
+                                enabled = managementEnabled,
+                                onClick = { onAction(BackupAction.TAG, entry) },
                             )
                             DropdownMenuItem(
                                 text = { Text("Delete") },
                                 shape = MenuDefaults.trailingItemShape,
-                                enabled = enabled,
+                                enabled = managementEnabled,
                                 onClick = { onAction(BackupAction.DELETE, entry) },
                             )
                         }
@@ -1908,14 +2205,14 @@ class MainActivity : ComponentActivity() {
                     onClick = onEnterBootloader,
                     enabled = editable,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) { Text("Connect to FM-1") }
+                ) { Text("Connect to ${state.connectedDeviceDisplayName}") }
             } else if (state.device != null && !state.ready) {
                 Button(
                     onClick = onConnect,
                     shapes = ButtonDefaults.shapes(),
                     enabled = editable && !state.multipleDevices,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                ) { Text("Connect to FM-1") }
+                ) { Text("Connect to ${state.connectedDeviceDisplayName}") }
             }
         }
     }
@@ -1927,10 +2224,10 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Builds a user-facing backup label from its timestamp and trailing ID suffix. */
-    private fun backupLabel(id: String): String {
+    private fun backupLabel(id: String, familyName: String): String {
         val parts = id.split('-')
         val timestamp = parts.getOrNull(1)?.toLongOrNull() ?: return id
-        return "FM-1 ${DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM).format(Date(timestamp))}" +
+        return "$familyName ${DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM).format(Date(timestamp))}" +
                 " · ${parts.getOrNull(2)?.takeLast(6).orEmpty()}"
     }
 

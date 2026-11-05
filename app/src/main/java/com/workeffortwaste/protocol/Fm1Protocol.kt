@@ -3,6 +3,8 @@ package com.workeffortwaste.protocol
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+internal const val SMK_TRIM_MARKER_ADDRESS = 0xC1224L
+
 /**
  * Validated WL82 inquiry fields.
  * @property product Download-mode product string, not proof of the physical FM1 model.
@@ -28,7 +30,7 @@ data class FlashInfo(val type: Int, val id: Long) {
             manufacturer in listOf(0, 0xff) || memoryType in listOf(0, 0xff) ||
             suggestedSize != FlashRestore.FLASH_SIZE.toLong()
         ) {
-            throw ProtocolException("FM-1 requires plausible SPI NOR JEDEC metadata for exactly 1 MiB")
+            throw ProtocolException("Supported devices require plausible SPI NOR JEDEC metadata for exactly 1 MiB")
         }
     }
 
@@ -39,6 +41,93 @@ data class FlashInfo(val type: Int, val id: Long) {
             val densityCode = id.toInt() and 0xff
             return if (densityCode in 16..28) 1L shl densityCode else null
         }
+}
+
+/** Reads the SPI record from the bounded, plain config blob in the boot area. */
+internal object BootSpiConfig {
+    private const val TABLE_START = 0x20
+    private const val TABLE_END = 0xa0
+    private const val ENTRY_SIZE = 32
+    private const val CONFIG_PREFIX_SIZE = 34
+    private const val MAX_CONFIG_SIZE = 4096
+    private const val ENCRYPTION_KEY = 0xffff
+    private const val CONFIG_FILE_NAME = "isd_config.ini"
+    private val settingValue = Regex("[0-9]+_[0-9]+_[0-9]+_[0-9]+")
+
+    fun extractSetting(bootArea: ByteArray): String? {
+        val windowSize = minOf(bootArea.size, FlashRestore.PROTECTED_SIZE)
+        if (windowSize < TABLE_END) return null
+
+        val header = decrypt(bootArea.copyOfRange(0, ENTRY_SIZE))
+        if (Fm1Protocol.crc16(header.copyOfRange(2, ENTRY_SIZE)) != littleEndian16(header, 0)) return null
+
+        var configBlob: ByteArray? = null
+        for (offset in TABLE_START until TABLE_END step ENTRY_SIZE) {
+            val entry = decrypt(bootArea.copyOfRange(offset, offset + ENTRY_SIZE))
+            if (Fm1Protocol.crc16(entry.copyOfRange(2, ENTRY_SIZE)) != littleEndian16(entry, 0)) break
+            if (asciiCString(entry, 16, 16) != CONFIG_FILE_NAME) continue
+            if (configBlob != null) return null
+
+            val address = littleEndian32(entry, 4)
+            val size = littleEndian32(entry, 8)
+            if (address < TABLE_END || size !in (CONFIG_PREFIX_SIZE + 1).toLong()..MAX_CONFIG_SIZE.toLong() ||
+                address > windowSize.toLong() - size
+            ) return null
+
+            val blob = bootArea.copyOfRange(address.toInt(), (address + size).toInt())
+            if (Fm1Protocol.crc16(blob) != littleEndian16(entry, 2)) return null
+            configBlob = blob
+        }
+        return configBlob?.let(::parseConfig)
+    }
+
+    private fun parseConfig(blob: ByteArray): String? {
+        var offset = CONFIG_PREFIX_SIZE
+        var spi: String? = null
+        while (offset < blob.size) {
+            val valueLength = blob[offset].toInt() and 0xff
+            if (valueLength == 0 || valueLength == 0xff) break
+
+            val nameStart = offset + 1
+            val nameEnd = (nameStart until blob.size).firstOrNull { blob[it] == 0.toByte() } ?: return null
+            if (blob.copyOfRange(nameStart, nameEnd).any { (it.toInt() and 0xff) !in 32..126 }) return null
+            val name = String(blob, nameStart, nameEnd - nameStart, Charsets.US_ASCII)
+            val valueStart = nameEnd + 1
+            if (valueLength > blob.size - valueStart) return null
+            if (name == "SPI") {
+                if (spi != null) return null
+                val value = String(blob, valueStart, valueLength, Charsets.US_ASCII)
+                if (!settingValue.matches(value)) return null
+                spi = value
+            }
+            offset = valueStart + valueLength
+        }
+        return spi
+    }
+
+    private fun decrypt(bytes: ByteArray): ByteArray {
+        var key = ENCRYPTION_KEY
+        return ByteArray(bytes.size) { index ->
+            val value = bytes[index].toInt() xor (key and 0xff)
+            key = ((key shl 1) xor (if (key and 0x8000 != 0) 0x1021 else 0)) and 0xffff
+            value.toByte()
+        }
+    }
+
+    private fun littleEndian16(bytes: ByteArray, offset: Int): Int =
+        (bytes[offset].toInt() and 0xff) or ((bytes[offset + 1].toInt() and 0xff) shl 8)
+
+    private fun littleEndian32(bytes: ByteArray, offset: Int): Long =
+        (bytes[offset].toLong() and 0xff) or
+                ((bytes[offset + 1].toLong() and 0xff) shl 8) or
+                ((bytes[offset + 2].toLong() and 0xff) shl 16) or
+                ((bytes[offset + 3].toLong() and 0xff) shl 24)
+
+    private fun asciiCString(bytes: ByteArray, offset: Int, length: Int): String? {
+        val end = (offset until offset + length).firstOrNull { bytes[it] == 0.toByte() } ?: return null
+        if (bytes.copyOfRange(offset, end).any { (it.toInt() and 0xff) !in 32..126 }) return null
+        return String(bytes, offset, end - offset, Charsets.US_ASCII)
+    }
 }
 
 /** FM1/WL82 commands; normal restore and emergency boot repair have separate fixed write boundaries. */
@@ -52,12 +141,12 @@ class Fm1Protocol(private val transport: ScsiTransport) {
         val family = inquiryField(8, 16)
         val product = inquiryField(16, 32)
         if (!family.equals("WL82", ignoreCase = true)) {
-            throw ProtocolException("Connect an M-VAVE FM-1 (AC791N/WL82); found $family")
+            throw ProtocolException("Supported devices must report WL82; found $family")
         }
         if (!product.startsWith("UBOOT") &&
             !product.startsWith("UDISK") && !product.startsWith("DEVICE")
         ) {
-            throw ProtocolException("FM-1 is not in a supported recovery mode: $product")
+            throw ProtocolException("Device is not in a supported recovery mode: $product")
         }
         return Fm1Identity(product, inquiryField(32, 36))
     }
@@ -90,6 +179,27 @@ class Fm1Protocol(private val transport: ScsiTransport) {
         val jedecId = ByteBuffer.wrap(data, 2, 4).order(ByteOrder.LITTLE_ENDIAN)
             .int.toLong() and 0xffffffffL
         return FlashInfo(targetType, jedecId)
+    }
+
+    /** Reads the protected boot area and extracts SPI from its referenced config blob. */
+    fun readBootSpiSetting(): String? {
+        val bootArea = ByteArray(FlashRestore.PROTECTED_SIZE)
+        var offset = 0
+        while (offset < bootArea.size) {
+            val length = minOf(256, bootArea.size - offset)
+            val block = readFlash(offset.toLong(), length)
+            if (block.size != length) throw ProtocolException("Incomplete boot-area read at 0x%04X".format(offset))
+            block.copyInto(bootArea, offset)
+            offset += length
+        }
+        return BootSpiConfig.extractSetting(bootArea)
+    }
+
+    /** Reads the one documented SMK marker; absence is not evidence that the unit is not SMK-37. */
+    fun hasSmkTrimMarker(): Boolean {
+        val marker = readFlash(SMK_TRIM_MARKER_ADDRESS, 8)
+        if (marker.size != 8) throw ProtocolException("Incomplete SMK trim-marker read")
+        return marker.contentEquals(byteArrayOf(0x74, 0x72, 0x69, 0x6d, 0x64, 0x61, 0x74, 0))
     }
 
     /** Read-only loader capability check; inquiry text alone does not establish readiness. */

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.core.content.edit
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
@@ -29,10 +30,7 @@ import java.security.MessageDigest
 import java.util.Random
 import org.json.JSONObject
 
-/**
- * Screenshot-only runner: connected, empty-library, transfer progress, Settings, and release notes.
- * Run through `screenshotThemes`, which pulls the PNGs into the repository's `screenshots` directory.
- */
+/** Captures themed, device-family, transfer, Settings, release-note, and bootloader screens. */
 class ScreenshotCapture {
     @get:Rule
     val compose = createEmptyComposeRule()
@@ -61,7 +59,8 @@ class ScreenshotCapture {
     )
 
     private val pinnedName = "Factory FM-1_015"
-    private val connectedFirmware = "FELUCCA v1.6.1"
+    private val connectedFirmware = "FM-1_015"
+    private val connectedEditorFirmware = "FELUCCA v1.6.1"
     private val shortLibrary = listOf("FELUCCA v1.6.1", "JIANT 0.9.18", "SLOOP v2.8")
 
     private val setupPreferences get() = context.getSharedPreferences("setup", Context.MODE_PRIVATE)
@@ -107,27 +106,51 @@ class ScreenshotCapture {
         instrumentation.uiAutomation.executeShellCommand(command)
             .let(ParcelFileDescriptor::AutoCloseInputStream).bufferedReader().use { it.readText() }
 
-    /** Replaces the dummy library; optionally includes a pinned factory backup. */
-    private fun seed(names: List<String>, includePinnedFactory: Boolean = true) {
+    /** Seeds the library with deterministic identities and recovery metadata. */
+    private fun seed(
+        names: List<String>,
+        includePinnedFactory: Boolean = true,
+        family: DeviceFamily = DeviceFamily.FM1,
+        familyOverrides: Map<String, DeviceFamily> = emptyMap(),
+    ) {
         seeded.forEach { it.delete() }
         seeded.clear()
         backupDirectory.mkdirs()
         val image = ByteArray(FlashRestore.FLASH_SIZE).also { Random(1).nextBytes(it) }
         val hash = MessageDigest.getInstance("SHA-256").digest(image).joinToString("") { "%02x".format(it) }
         val now = System.currentTimeMillis()
-        val ordered = (if (includePinnedFactory) listOf(pinnedName) else emptyList()) + names
+        val factoryName = when (family) {
+            DeviceFamily.FM1 -> pinnedName
+            DeviceFamily.SMK37 -> "Factory SMK-37 Pro"
+            DeviceFamily.POCKETX_BLACKBOX -> "Factory Pocket X"
+            DeviceFamily.UNKNOWN -> "Factory device"
+        }
+        val ordered = (if (includePinnedFactory) listOf(factoryName) else emptyList()) + names
         ordered.forEachIndexed { index, name ->
             val identity = name.toByteArray(Charsets.US_ASCII).joinToString("") { "%02x".format(it) }
             val created = now - index * 86_400_000L * 2
             val file = File(backupDirectory, "fm1-$created-${index + 1}-$hash-fw-$identity.bin")
             file.writeBytes(image)
             seeded += file
+            store.updateMetadata(
+                file.name,
+                BackupMetadata(
+                    classification = classificationFor(familyOverrides[name] ?: family),
+                    userFamily = if ((familyOverrides[name] ?: family) == DeviceFamily.UNKNOWN) {
+                        DeviceFamily.UNKNOWN
+                    } else null,
+                    userFirmwareLabel = if (name == "SLOOP v2.8") "Custom SLOOP tag" else null,
+                    editorFirmwareLabel = name.takeIf { it.startsWith("FELUCCA") },
+                ),
+            )
+            seeded += File(backupDirectory, "fm1-$created-${index + 1}-$hash.meta")
         }
         backupPreferences.edit(commit = true) {
             putStringSet(
                 "pinned_backup_ids",
                 if (includePinnedFactory) setOf(seeded.first().name) else emptySet(),
             )
+            putBoolean("legacy_backup_family_upgrade_v1", true)
         }
     }
 
@@ -142,40 +165,73 @@ class ScreenshotCapture {
     /** Shows the seeded library regardless of what an earlier service instance already loaded. */
     private fun BackupState.withSeededLibrary(): BackupState {
         val entries = store.list()
+        val pinnedIds = backupPreferences.getStringSet("pinned_backup_ids", emptySet()).orEmpty()
         return copy(
             backups = entries,
-            pinnedBackupIds = entries.filter { it.firmwareIdentity == pinnedName }.map { it.id }.toSet(),
+            pinnedBackupIds = entries.filter { it.id in pinnedIds }.map { it.id }.toSet(),
             libraryLoading = false,
             libraryError = "",
         )
     }
 
-    private val connected: BackupState.() -> BackupState = {
+    private fun firmwareIdentityFor(family: DeviceFamily): String? = when (family) {
+        DeviceFamily.FM1 -> connectedFirmware
+        DeviceFamily.SMK37 -> "SMK-37 Pro_016"
+        DeviceFamily.POCKETX_BLACKBOX -> "PocketX_924"
+        DeviceFamily.UNKNOWN -> null
+    }
+
+    private fun classificationFor(family: DeviceFamily): DeviceClassification = when (family) {
+        DeviceFamily.FM1 -> classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false)
+        DeviceFamily.SMK37 -> classifyDeviceFamily("SMK-37 Pro_016", "4_1_0_0", 0xEB6014, true)
+        DeviceFamily.POCKETX_BLACKBOX -> classifyDeviceFamily("PocketX_924", "2_1_0_0", 0x856014, false)
+        DeviceFamily.UNKNOWN -> DeviceClassification()
+    }
+
+    private fun connectedFor(family: DeviceFamily): BackupState.() -> BackupState = {
+        val firmware = firmwareIdentityFor(family)
         copy(
             deviceMode = DeviceMode.DOWNLOAD,
             discoveryActive = true,
             ready = true,
-            firmwareIdentity = connectedFirmware,
-            status = statusMessage("FM-1 successfully connected", "Ready to backup or restore full flash"),
+            firmwareIdentity = firmware,
+            editorFirmwareLabel = if (family == DeviceFamily.FM1) connectedEditorFirmware else null,
+            deviceClassification = classificationFor(family),
+            status = statusMessage(
+                "${family.displayName} successfully connected",
+                "Ready to backup or restore full flash",
+            ),
         )
     }
 
-    private fun transfer(operation: FlashOperation, detail: String): BackupState.() -> BackupState = {
-        connected().copy(
-            busy = true,
-            transfer = operation,
-            progress = 0.75f,
-            progressKnown = true,
-            status = statusMessage(
-                if (operation == FlashOperation.BACKUP) "Backing up FM-1" else "Restoring FM-1",
-                detail,
-            ),
-        )
+    private val connected: BackupState.() -> BackupState = connectedFor(DeviceFamily.FM1)
+
+    private fun transfer(
+        operation: FlashOperation,
+        detail: String,
+        family: DeviceFamily = DeviceFamily.FM1,
+    ): BackupState.() -> BackupState {
+        val connected = connectedFor(family)
+        return {
+            connected().copy(
+                busy = true,
+                transfer = operation,
+                progress = 0.75f,
+                progressKnown = true,
+                status = statusMessage(
+                    if (operation == FlashOperation.BACKUP) "Backing up ${family.displayName}"
+                    else "Restoring ${family.displayName}",
+                    detail,
+                ),
+            )
+        }
     }
 
     private fun setTheme(theme: Theme) {
         setupPreferences.edit(commit = true) {
             putBoolean("complete", true)
+            putBoolean("hide_incompatible_backups", false)
+            putBoolean("hide_device_tags", false)
             putString("appearance_theme", theme.appearance)
             if (theme.palette != null) putString("fm1_palette", theme.palette)
         }
@@ -244,16 +300,14 @@ class ScreenshotCapture {
     }
 
     private fun captureLatestReleaseNotes() {
-        val connection = URL("https://api.github.com/repos/workeffortwaste/fm1-backup-restore/releases/latest")
-            .openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 15_000
-        val release = try {
-            val json = connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
-            checkNotNull(parseAppRelease(json, "v0.0.0"))
-        } finally {
-            connection.disconnect()
-        }
+        val release = AppRelease(
+            version = "v0.9",
+            notes = "## Changes\n\nStable release-notes fixture for screenshots.\n\n" +
+                    "[Full Changelog](https://github.com/workeffortwaste/fm1-backup-restore/compare/v0.8...v0.9)",
+            apkUrl = "https://github.com/workeffortwaste/fm1-backup-restore/releases/download/v0.9/app.apk",
+            size = 1024 * 1024,
+            sha256 = "ab".repeat(32),
+        )
         seed(shortLibrary)
         setTheme(themes.first { it.fileName == "custom-green" })
         capture("custom-green-update-latest", connected, configure = { activity ->
@@ -317,7 +371,7 @@ class ScreenshotCapture {
             showDialog = true,
             sha256 = verification.sha256,
             identity = verification.identity,
-            matchesPublishedRelease = verification.matchesPublishedRelease,
+            matchesPublishedRelease = true,
             message = verification.message,
         )
     }
@@ -409,7 +463,120 @@ class ScreenshotCapture {
             }
             seed(shortLibrary)
         }
+        captureBlackThemeForSmk37AndPocketX()
+        captureSmkRestoreWarning()
+        captureUnknownDevicePicker()
+        captureTagEditDialog()
+        captureMixedFm1Library()
+        captureMigrationSplash()
         captureLatestReleaseNotes()
         captureBootloaderVerificationVariants()
+    }
+
+    private fun captureBlackThemeForSmk37AndPocketX() {
+        val blackTheme = themes.first { it.fileName == "custom-black" }
+        val devices = listOf(
+            Triple(
+                "smk37",
+                DeviceFamily.SMK37,
+                listOf("Snoop37_016", "SMK studio setup", "SLOOP v2.8"),
+            ),
+            Triple(
+                "pocketx",
+                DeviceFamily.POCKETX_BLACKBOX,
+                listOf("BlackBox_9xx", "OpenPocket 0.9.4", "Pocket X session"),
+            ),
+        )
+        devices.forEach { (name, family, backups) ->
+            setTheme(blackTheme)
+            seed(backups, family = family)
+            capture("custom-black-$name-connected", connectedFor(family))
+            capture(
+                "custom-black-$name-backup-75",
+                transfer(FlashOperation.BACKUP, "Reading flash", family),
+            )
+        }
+    }
+
+    private fun captureSmkRestoreWarning() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(listOf("SMK-37 restore source"), includePinnedFactory = false, family = DeviceFamily.SMK37)
+        capture("custom-black-smk37-restore-warning", connectedFor(DeviceFamily.SMK37), navigate = {
+            compose.onNodeWithContentDescription("Actions for SMK-37", substring = true).performClick()
+            compose.onNodeWithText("Restore").performClick()
+            compose.onNodeWithText(
+                "Only restore an SMK-37 backup to the exact physical keyboard it was created with, due to device specific calibration data.",
+            ).performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("I confirm this backup was created with this exact physical SMK-37.")
+                .performScrollTo().assertIsDisplayed()
+            compose.mainClock.advanceTimeBy(1000)
+            SystemClock.sleep(600)
+            instrumentation.waitForIdleSync()
+        })
+    }
+
+    private fun captureUnknownDevicePicker() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(emptyList(), includePinnedFactory = false)
+        capture("custom-black-unknown-device-selection", connectedFor(DeviceFamily.UNKNOWN), navigate = {
+            compose.onNodeWithText("Device not recognised").assertIsDisplayed()
+            check(listOf("M-UPGRADE:", "Boot SPI:", "JEDEC:", "Trim:").all { label ->
+                compose.onAllNodesWithText(label, substring = true).fetchSemanticsNodes().isEmpty()
+            })
+            compose.onNodeWithText(DeviceFamily.FM1.displayName).assertIsDisplayed()
+            compose.onNodeWithText(DeviceFamily.SMK37.displayName).assertIsDisplayed()
+            compose.onNodeWithText(DeviceFamily.POCKETX_BLACKBOX.displayName).assertIsDisplayed()
+            compose.mainClock.advanceTimeBy(1000)
+            SystemClock.sleep(600)
+            instrumentation.waitForIdleSync()
+        })
+    }
+
+    private fun captureTagEditDialog() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(listOf("FM-1_909"), includePinnedFactory = false)
+        capture("custom-black-tag-edit-dialog", connected, navigate = {
+            compose.onNodeWithContentDescription("Actions for FM-1", substring = true).performClick()
+            compose.onNodeWithText("Tag").performClick()
+            compose.onNodeWithText("Custom tag").assertIsDisplayed()
+            compose.onNodeWithText("Give your backup a custom tag so you know which device it came from.")
+                .assertIsDisplayed()
+            compose.onNodeWithText("Device tag").assertIsDisplayed()
+            compose.mainClock.advanceTimeBy(1000)
+            SystemClock.sleep(600)
+            instrumentation.waitForIdleSync()
+        })
+    }
+
+    private fun captureMixedFm1Library() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        val backups = listOf(
+            "FM-1 studio backup",
+            "SMK-37 Pro backup",
+            "OpenPocket backup",
+        )
+        seed(
+            backups,
+            familyOverrides = mapOf(
+                "SMK-37 Pro backup" to DeviceFamily.SMK37,
+                "OpenPocket backup" to DeviceFamily.POCKETX_BLACKBOX,
+            ),
+        )
+        capture("custom-black-mixed-fm1-connected", connected) {
+            check(compose.onAllNodesWithText("Unknown", substring = true).fetchSemanticsNodes().isEmpty())
+            check(compose.onAllNodesWithText("Device type unknown", substring = true).fetchSemanticsNodes().isEmpty())
+        }
+    }
+
+    private fun captureMigrationSplash() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(shortLibrary)
+        capture(
+            "custom-black-updating-backups",
+            change = { copy(legacyBackupUpgrade = BackupLibraryUpgradeProgress(completed = 2, total = 5)) },
+        ) {
+            compose.onNodeWithText("Updating").assertIsDisplayed()
+            compose.onNodeWithText("Checking backup 2 of 5").assertDoesNotExist()
+        }
     }
 }

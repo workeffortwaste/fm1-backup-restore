@@ -16,6 +16,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -23,6 +26,9 @@ import androidx.compose.ui.unit.dp
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
+import com.mikepenz.markdown.annotator.annotatorSettings
+import com.mikepenz.markdown.compose.components.markdownComponents
+import com.mikepenz.markdown.compose.elements.MarkdownParagraph
 import java.util.Locale
 
 @Composable
@@ -53,7 +59,7 @@ private fun UpdateControls(updater: AppUpdateModel, state: AppUpdateState, devic
             modifier = Modifier.heightIn(min = 48.dp),
         ) { Text("View update ${state.release.version}") }
     }
-    if (!deviceIdle) InfoBoxDetail("Updates can be installed after the FM-1 operation finishes.")
+    if (!deviceIdle) InfoBoxDetail("Updates can be installed after the device operation finishes.")
     Button(
         onClick = { updater.check(manual = true) },
         enabled = deviceIdle && !state.checking && !state.downloading && !updater.installerOpen,
@@ -81,6 +87,7 @@ internal fun AppUpdateDialog(
     onInstall: () -> Unit,
 ) {
     if (!state.showDialog || !deviceIdle) return
+    val uriHandler = LocalUriHandler.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -102,6 +109,20 @@ internal fun AppUpdateDialog(
                     Markdown(
                         content = release.notes.ifBlank { "No release notes provided." },
                         modifier = Modifier.fillMaxWidth(),
+                        components = markdownComponents(
+                            paragraph = { model ->
+                                MarkdownParagraph(
+                                    content = model.content,
+                                    node = model.node,
+                                    style = model.typography.paragraph,
+                                    annotatorSettings = annotatorSettings(
+                                        linkInteractionListener = LinkInteractionListener { link ->
+                                            (link as? LinkAnnotation.Url)?.let { uriHandler.openUri(it.url) }
+                                        },
+                                    ),
+                                )
+                            },
+                        ),
                         colors = markdownColor(
                             text = MaterialTheme.colorScheme.onSurfaceVariant,
                         ),

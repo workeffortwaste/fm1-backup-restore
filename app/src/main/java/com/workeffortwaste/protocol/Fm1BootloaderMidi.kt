@@ -1,6 +1,6 @@
 package com.workeffortwaste.protocol
 
-/** Pure MIDI command policy; Android discovery and handle ownership live in AndroidFm1Midi. */
+/** Supported-device MIDI command policy; Android discovery and handle ownership live in AndroidFm1Midi. */
 object Fm1BootloaderMidi {
     const val SUPPORTED_USB_IDS = "4C4A:C755, 1209:0001"
 

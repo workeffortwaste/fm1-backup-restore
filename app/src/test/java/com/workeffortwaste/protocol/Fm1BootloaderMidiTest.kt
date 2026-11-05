@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
-/** Locks down the FM1-only MIDI policy without depending on Android device discovery. */
+/** Locks down supported-device MIDI policy without depending on Android device discovery. */
 class Fm1BootloaderMidiTest {
     @Test
     fun recognizesNormalModeUsbIdOnlyWithMidiInterface() {

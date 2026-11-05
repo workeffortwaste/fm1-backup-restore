@@ -6,8 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.hasClickAction
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -33,17 +31,20 @@ class SettingsUiTest {
     private var originalComplete = false
     private var originalAppearance: String? = null
     private var originalPalette: String? = null
+    private var originalHideDeviceTags = false
     private var originalLastCheck: Long? = null
 
     @Before fun prepare() {
         originalComplete = preferences.getBoolean("complete", false)
         originalAppearance = preferences.getString("appearance_theme", null)
         originalPalette = preferences.getString("fm1_palette", null)
+        originalHideDeviceTags = preferences.getBoolean("hide_device_tags", false)
         originalLastCheck = if (updates.contains("last_check")) updates.getLong("last_check", 0) else null
         preferences.edit(commit = true) {
             putBoolean("complete", true)
             putString("appearance_theme", "material_you")
             putString("fm1_palette", "black")
+            putBoolean("hide_device_tags", false)
         }
         updates.edit(commit = true) { putLong("last_check", System.currentTimeMillis()) }
         if (Build.VERSION.SDK_INT >= 31) {
@@ -56,6 +57,7 @@ class SettingsUiTest {
             putBoolean("complete", originalComplete)
             putString("appearance_theme", originalAppearance)
             putString("fm1_palette", originalPalette)
+            putBoolean("hide_device_tags", originalHideDeviceTags)
         }
         updates.edit(commit = true) {
             val lastCheck = originalLastCheck
@@ -114,7 +116,7 @@ class SettingsUiTest {
         val otherIcon = Fm1Palette.entries.first { it != originalIcon }
         withActivity {
             compose.onNodeWithContentDescription("More options").performClick()
-            compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+            compose.onNodeWithContentDescription("Open app settings").performClick()
             compose.onNodeWithText("${otherIcon.label} icon").performScrollTo().performClick()
             compose.onNodeWithText("Change app icon?").assertIsDisplayed()
             compose.onNodeWithText("Apply and close").assertIsDisplayed()
@@ -129,7 +131,7 @@ class SettingsUiTest {
         val originalIcon = LauncherIcon.selected(context)
         withActivity {
             compose.onNodeWithContentDescription("More options").performClick()
-            compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+            compose.onNodeWithContentDescription("Open app settings").performClick()
             compose.onNodeWithText("FM-1 Themes").performScrollTo().performClick()
             compose.onNodeWithText("Purple").performScrollTo().performClick()
             compose.waitForIdle()
@@ -141,13 +143,23 @@ class SettingsUiTest {
         }
     }
 
+    @Test fun hideDeviceTagsSettingPersists() {
+        withActivity {
+            compose.onNodeWithContentDescription("More options").performClick()
+            compose.onNodeWithContentDescription("Open app settings").performClick()
+            compose.onNodeWithText("Hide device tags").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Hide device tags").performClick()
+            assertEquals(true, preferences.getBoolean("hide_device_tags", false))
+        }
+    }
+
     @Test fun applyingAppIconClosesActivityAndSurvivesRelaunch() {
         val originalIcon = LauncherIcon.selected(context)
         val otherIcon = Fm1Palette.entries.first { it != originalIcon }
         try {
             ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
                 compose.onNodeWithContentDescription("More options").performClick()
-                compose.onNode(hasText("Settings") and hasClickAction()).performClick()
+                compose.onNodeWithContentDescription("Open app settings").performClick()
                 compose.onNodeWithText("${otherIcon.label} icon").performScrollTo().performClick()
                 compose.onNodeWithText("Apply and close").performClick()
                 compose.waitUntil(10_000) { scenario.state == Lifecycle.State.DESTROYED }

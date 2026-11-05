@@ -37,6 +37,20 @@ class TransferProgressScreenTest {
         )).assertExists()
     }
 
+    @Test fun transferTitleUsesTheDiscoveredDeviceName() {
+        compose.setContent {
+            MaterialExpressiveTheme {
+                TransferProgressScreen(
+                    FlashOperation.RESTORE,
+                    statusMessage("Restoring SMK-37", "Writing flash"),
+                    0f,
+                    deviceName = "SMK-37 Pro / Elite",
+                )
+            }
+        }
+        compose.onNodeWithText("Restoring SMK-37 Pro / Elite").assertIsDisplayed()
+    }
+
     @Test fun restoreCannotBeCancelledAndSupportsZeroProgress() {
         compose.setContent {
             MaterialExpressiveTheme {

@@ -1,5 +1,10 @@
 package com.workeffortwaste.protocol
 
+data class MidiIdentityEvidence(
+    val mUpgradeIdentity: String? = null,
+    val editorLabel: String? = null,
+)
+
 /** Read-only M-UPGRADE identity request and its LSB-first, seven-bit packed reply. */
 object FirmwareIdentity {
     fun editorRequest(): ByteArray = byteArrayOf(0xf0.toByte(), 0x7d, 0x46, 0x4c, 0x01, 0xf7.toByte())

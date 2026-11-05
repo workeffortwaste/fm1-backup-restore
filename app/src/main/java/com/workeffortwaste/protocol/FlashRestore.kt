@@ -32,7 +32,7 @@ class FlashRestore(private val protocol: Fm1Protocol) {
         mutationStarting: () -> Unit,
         progress: (phase: String, bytes: Long, total: Long) -> Unit,
     ): String {
-        require(confirmedCapacity == FLASH_SIZE.toLong()) { "FM-1 restore requires exactly 1 MiB" }
+        require(confirmedCapacity == FLASH_SIZE.toLong()) { "Restore requires exactly 1 MiB" }
         require(image.size == FLASH_SIZE) { "Restore image must be exactly 1 MiB" }
         val expected = image.copyOf()
         checkCancelled()
@@ -66,7 +66,7 @@ class FlashRestore(private val protocol: Fm1Protocol) {
                 }
             }
             progress(
-                "Writing to FM-1 flash",
+                "Writing to flash",
                 (sector + SECTOR_SIZE - PROTECTED_SIZE).toLong(),
                 WRITABLE_SIZE.toLong(),
             )

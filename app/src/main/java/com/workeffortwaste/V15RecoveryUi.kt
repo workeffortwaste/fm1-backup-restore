@@ -25,7 +25,7 @@ internal fun V15RecoveryDialog(
     if (!state.showDialog) return
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Create v15 recovery snapshot") },
+        title = { Text("Create FM-1 v15 recovery snapshot") },
         text = {
             Column(
                 modifier = Modifier.sizeIn(maxHeight = 360.dp).verticalScroll(rememberScrollState()),
@@ -34,7 +34,7 @@ internal fun V15RecoveryDialog(
                 Text("Didn't manage to take a backup of your device before you started flashing custom firmware?")
                 Text(
                     "Downloads and verifies the official v15 firmware update directly from M-VAVE, " +
-                            "reconstructs a stock v15 snapshot, and adds FM-1_015 RECOVERY to your library.",
+                            "reconstructs a stock v15 snapshot named FM-1_015 RECOVERY, and adds it to your library.",
                 )
                 if (state.working) {
                     Text(state.phase, style = MaterialTheme.typography.titleSmall)

@@ -12,6 +12,7 @@ import android.os.Looper
 import android.util.Log
 import com.workeffortwaste.protocol.Fm1BootloaderMidi
 import com.workeffortwaste.protocol.FirmwareIdentity
+import com.workeffortwaste.protocol.MidiIdentityEvidence
 import com.workeffortwaste.protocol.ProtocolException
 import java.io.Closeable
 import java.io.IOException
@@ -33,7 +34,7 @@ object AndroidFm1Midi {
     @Suppress("DEPRECATION")
     fun diagnostics(manager: MidiManager): String {
         val devices = availableDevices(manager).filter { it.type == MidiDeviceInfo.TYPE_USB }
-        if (devices.isEmpty()) return "Android MIDI: no FM-1 MIDI interfaces."
+        if (devices.isEmpty()) return "Android MIDI: no supported USB MIDI devices found."
         val matchedIds = devices(manager).map { it.id }.toSet()
         return devices.joinToString("\n") { info ->
             val usb = info.properties.getParcelable<UsbDevice>(MidiDeviceInfo.PROPERTY_USB_DEVICE)
@@ -47,7 +48,7 @@ object AndroidFm1Midi {
 
     /**
      * Uses the pre-API-33 discovery/parcelable APIs for Android 8+ compatibility.
-     * Matches only the normal-mode USB ID and MIDI interface, never product or port names.
+    * Matches supported normal-mode USB IDs and MIDI interfaces, never product or port names.
      */
     @Suppress("DEPRECATION")
     fun devices(manager: MidiManager): List<MidiDeviceInfo> =
@@ -70,16 +71,16 @@ object AndroidFm1Midi {
     /**
      * Called only on the model worker, since opening MIDI polls a main-thread callback.
      * The caller must retain and close the returned handle after reboot detection or failure:
-     * Android's input port sends *to* the FM1, and closing it immediately can discard queued SysEx.
+    * Android's input port sends *to* the device, and closing it immediately can discard queued SysEx.
      */
     fun sendBootloader(
         context: Context,
         checkCancelled: () -> Unit,
-        onFirmwareIdentity: (String?) -> Unit = {},
-    ): Closeable = openMidiSession(context, checkCancelled, onFirmwareIdentity, reboot = true)
+        onIdentity: (MidiIdentityEvidence) -> Unit = {},
+    ): Closeable = openMidiSession(context, checkCancelled, onIdentity, reboot = true)
 
-    fun queryIdentity(context: Context, deviceId: Int, checkCancelled: () -> Unit): String? {
-        var identity: String? = null
+    fun queryIdentity(context: Context, deviceId: Int, checkCancelled: () -> Unit): MidiIdentityEvidence {
+        var identity = MidiIdentityEvidence()
         openMidiSession(
             context, checkCancelled, { identity = it }, reboot = false,
             expectedDeviceId = deviceId
@@ -90,7 +91,7 @@ object AndroidFm1Midi {
     private fun openMidiSession(
         context: Context,
         checkCancelled: () -> Unit,
-        onFirmwareIdentity: (String?) -> Unit,
+        onIdentity: (MidiIdentityEvidence) -> Unit,
         reboot: Boolean,
         expectedDeviceId: Int? = null,
     ): Closeable {
@@ -99,21 +100,25 @@ object AndroidFm1Midi {
             ?: throw ProtocolException("Android MIDI is unavailable on this phone")
         val devices = devices(manager)
         if (devices.isEmpty()) {
-            throw ProtocolException("No FM-1 USB MIDI interface found. Connect the FM-1 in normal MIDI mode and tap again.")
+            throw ProtocolException(
+                "No supported USB MIDI interface found. Connect a supported device in normal MIDI mode and tap again."
+            )
         }
         val deviceInfo = devices.singleOrNull()
-            ?: throw ProtocolException("More than one FM-1 MIDI interface found. Connect only one FM-1.")
+            ?: throw ProtocolException("More than one supported USB MIDI interface found. Connect only one device.")
         if (expectedDeviceId != null && deviceInfo.id != expectedDeviceId) {
-            throw ProtocolException("FM-1 MIDI connection changed during discovery. Refresh again.")
+            throw ProtocolException("Supported MIDI device changed during discovery. Refresh again.")
         }
         val inputPort = deviceInfo.ports.singleOrNull { port -> port.type == MidiDeviceInfo.PortInfo.TYPE_INPUT }
-            ?: throw ProtocolException("Expected one FM-1 MIDI input port; no SysEx was sent")
+            ?: throw ProtocolException("Expected one supported MIDI input port; no SysEx was sent")
 
         val midiDevice = openDevice(manager, deviceInfo, checkCancelled)
         try {
             checkCancelled()
             val port = midiDevice.openInputPort(inputPort.portNumber)
-                ?: throw ProtocolException("FM-1 MIDI port is busy or disconnected. You might have the FM-1 connected in another app or browser.")
+                ?: throw ProtocolException(
+                    "Supported MIDI port is busy or disconnected. The device might be connected in another app or browser."
+                )
             try {
                 checkCancelled()
                 val send: (ByteArray) -> Unit = { bytes ->
@@ -128,11 +133,11 @@ object AndroidFm1Midi {
                         FirmwareIdentity.editorRequest(), FirmwareIdentity::parseEditor
                     )
                 } else null
-                val identity = editorIdentity ?: readIdentity(
+                val identity = readIdentity(
                     midiDevice, deviceInfo, send, checkCancelled,
                     FirmwareIdentity.request(), FirmwareIdentity::parse
                 )
-                onFirmwareIdentity(identity)
+                onIdentity(MidiIdentityEvidence(identity, editorIdentity))
                 checkCancelled()
                 if (reboot) Fm1BootloaderMidi.send { bytes -> port.send(bytes, 0, bytes.size) }
             } catch (failure: Exception) {
@@ -235,11 +240,11 @@ object AndroidFm1Midi {
             while (true) {
                 checkCancelled()
                 if (System.nanoTime() >= deadline) {
-                    throw ProtocolException("Timed out opening FM-1 MIDI; no SysEx was sent")
+                    throw ProtocolException("Timed out opening MIDI device; no SysEx was sent")
                 }
                 val device = try {
                     openedDevice.get(100, TimeUnit.MILLISECONDS)
-                        ?: throw ProtocolException("Could not open FM-1 MIDI; no SysEx was sent")
+                        ?: throw ProtocolException("Could not open MIDI device; no SysEx was sent")
                 } catch (_: TimeoutException) {
                     // Poll so cancellation does not have to wait for the overall deadline.
                     continue

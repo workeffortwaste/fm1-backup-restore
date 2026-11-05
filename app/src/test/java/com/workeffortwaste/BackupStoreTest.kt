@@ -1,6 +1,7 @@
 package com.workeffortwaste
 
 import com.workeffortwaste.protocol.FlashRestore
+import com.workeffortwaste.protocol.Fm1Protocol
 import com.workeffortwaste.protocol.RestoreImage
 import java.io.File
 import java.io.ByteArrayInputStream
@@ -41,6 +42,79 @@ class BackupStoreTest {
         return store.publish(pending, hash)
     }
 
+    private fun saveLegacy(
+        name: String,
+        spiSetting: String?,
+        trimMarker: Boolean = false,
+        metadata: BackupMetadata? = null,
+    ): BackupEntry {
+        val image = bytes.copyOf()
+        val config = ByteArrayOutputStream().apply {
+            write(ByteArray(34))
+            fun record(key: String, value: String) {
+                val valueBytes = value.toByteArray(Charsets.US_ASCII)
+                write(valueBytes.size)
+                write(key.toByteArray(Charsets.US_ASCII))
+                write(0)
+                write(valueBytes)
+            }
+            record("OSC", "OSC0")
+            spiSetting?.let { record("SPI", it) }
+        }.toByteArray()
+        val bootArea = ByteArray(FlashRestore.PROTECTED_SIZE) { 0xff.toByte() }
+
+        fun write16(bytes: ByteArray, offset: Int, value: Int) {
+            bytes[offset] = value.toByte()
+            bytes[offset + 1] = (value ushr 8).toByte()
+        }
+
+        fun write32(bytes: ByteArray, offset: Int, value: Int) {
+            repeat(4) { bytes[offset + it] = (value ushr (it * 8)).toByte() }
+        }
+
+        fun encode(bytes: ByteArray): ByteArray {
+            var key = 0xffff
+            return ByteArray(bytes.size) { index ->
+                val value = bytes[index].toInt() xor (key and 0xff)
+                key = ((key shl 1) xor (if (key and 0x8000 != 0) 0x1021 else 0)) and 0xffff
+                value.toByte()
+            }
+        }
+
+        fun writeEntry(offset: Int, fileName: String, address: Int, length: Int, dataCrc: Int, attribute: Int) {
+            val entry = ByteArray(32)
+            write16(entry, 2, dataCrc)
+            write32(entry, 4, address)
+            write32(entry, 8, length)
+            entry[12] = attribute.toByte()
+            fileName.toByteArray(Charsets.US_ASCII).copyInto(entry, 16)
+            write16(entry, 0, Fm1Protocol.crc16(entry.copyOfRange(2, entry.size)))
+            encode(entry).copyInto(bootArea, offset)
+        }
+
+        val header = ByteArray(32)
+        write16(header, 0, Fm1Protocol.crc16(header.copyOfRange(2, header.size)))
+        encode(header).copyInto(bootArea)
+        writeEntry(0x20, "uboot.boot", 0xa0, 16, 0, 0)
+        writeEntry(0x40, "isd_config.ini", 0x100, config.size, Fm1Protocol.crc16(config), 2)
+        writeEntry(0x60, "app_dir_head", FlashRestore.PROTECTED_SIZE, 0, 0, 0x81)
+        writeEntry(0x80, "key_mac", 0xff000, 0x1000, 0, 0x12)
+        config.copyInto(bootArea, 0x100)
+        bootArea.copyInto(image)
+        if (trimMarker) {
+            "trimdat\u0000".toByteArray(Charsets.US_ASCII)
+                .copyInto(image, com.workeffortwaste.protocol.SMK_TRIM_MARKER_ADDRESS.toInt())
+        }
+
+        val imageHash = RestoreImage.hex(MessageDigest.getInstance("SHA-256").digest(image))
+        val pending = store.createPending().apply { writeBytes(image) }
+        return if (metadata == null) {
+            store.publish(pending, imageHash, name)
+        } else {
+            store.publishWithMetadata(pending, imageHash, name, metadata)
+        }
+    }
+
     @Test fun emptyLibraryDoesNotRequireDirectory() {
         assertTrue(store.list().isEmpty())
     }
@@ -55,12 +129,122 @@ class BackupStoreTest {
         assertTrue(store.list().isEmpty())
     }
 
+    @Test fun observedEvidenceAndUserTagsSurviveRenameWithoutChangingImage() {
+        val classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false)
+        val captured = BackupMetadata(classification, editorFirmwareLabel = "JIANT v1.0")
+        val pending = store.createPending().apply { writeBytes(bytes) }
+        val entry = store.publishWithMetadata(pending, hash, "FM-1_015", captured)
+        assertEquals(captured, entry.metadata)
+
+        val tagged = captured.copy(
+            manualFamilySelection = DeviceFamily.FM1,
+            userFamily = DeviceFamily.SMK37,
+            userFirmwareLabel = "Custom label",
+        )
+        val updated = store.updateMetadata(entry.id, tagged)
+        assertEquals(entry.id, updated.id)
+        assertEquals(tagged, updated.metadata)
+        assertEquals(entry.sha256, updated.sha256)
+
+        val renamed = store.rename(updated.id, "Visible backup name")
+        val restored = BackupStore(directory).list().single()
+        assertEquals("Visible backup name", renamed.firmwareIdentity)
+        assertEquals(tagged, restored.metadata)
+        assertEquals(DeviceFamily.SMK37, restored.taggedFamily)
+        assertTrue(restored.familyIsUserTagged)
+        assertTrue(restored.familyIsManuallySelected)
+        store.open(restored.id).use { assertArrayEquals(bytes, it.readBytes()) }
+        assertEquals(hash, restored.sha256)
+    }
+
+    @Test fun recoveryBackupWithoutMidiIdentityDoesNotPersistFirmwareTag() {
+        val classification = classifyDeviceFamily(null, "4_1_0_0", 0x856014, false)
+        val pending = store.createPending().apply { writeBytes(bytes) }
+        val entry = store.publishWithMetadata(
+            pending,
+            hash,
+            firmwareIdentity = null,
+            metadata = BackupMetadata(classification),
+        )
+
+        assertNull(entry.firmwareIdentity)
+        assertNull(entry.metadata?.classification?.rawMidiIdentity)
+
+        val restored = BackupStore(directory).list().single()
+        assertNull(restored.firmwareIdentity)
+        assertEquals(DeviceFamily.FM1, restored.taggedFamily)
+        assertEquals("", restored.identityLine())
+    }
+
+    @Test fun legacyMigrationUsesFlashEvidenceAndPreservesNamesAndImages() {
+        val fm1 = saveLegacy("FM-1-looking filename", "4_1_0_0")
+        val pocketX = saveLegacy("Old Pocket X", "2_1_0_0")
+        val smk = saveLegacy("Snoop37", "4_1_0_0", trimMarker = true)
+        val unknown = saveLegacy("FM-1_015", null)
+        val custom = saveLegacy(
+            "My backup",
+            "2_1_0_0",
+            metadata = BackupMetadata(
+                userFirmwareLabel = "My custom label",
+            ),
+        )
+        val originalHashById = listOf(fm1, pocketX, smk, unknown, custom).associate { it.id to it.sha256 }
+        val progress = mutableListOf<Pair<Int, Int>>()
+
+        val upgraded = store.upgradeLegacyFamilies(store.list()) { completed, total ->
+            progress += completed to total
+        }
+
+        assertEquals(DeviceFamily.FM1, upgraded.single { it.id == fm1.id }.taggedFamily)
+        assertEquals(DeviceFamily.POCKETX_BLACKBOX, upgraded.single { it.id == pocketX.id }.taggedFamily)
+        assertEquals(DeviceFamily.SMK37, upgraded.single { it.id == smk.id }.taggedFamily)
+        assertEquals(DeviceFamily.UNKNOWN, upgraded.single { it.id == unknown.id }.taggedFamily)
+        val restoredCustom = upgraded.single { it.id == custom.id }
+        assertEquals(DeviceFamily.POCKETX_BLACKBOX, restoredCustom.taggedFamily)
+        assertEquals("My custom label", restoredCustom.metadata?.userFirmwareLabel)
+        assertEquals((1..5).map { it to 5 }, progress)
+
+        upgraded.forEach { entry ->
+            assertEquals(originalHashById.getValue(entry.id), entry.sha256)
+            store.open(entry.id).use { assertEquals(FlashRestore.FLASH_SIZE, it.readBytes().size) }
+        }
+    }
+
+    @Test fun identityLinePrefersCustomTagThenCapturedFirmwareAndNeverFallsBackToEditorName() {
+        val automatic = save().copy(
+            metadata = BackupMetadata(
+                classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
+            ),
+        )
+        assertEquals("FM-1_015", automatic.identityLine())
+
+        val custom = automatic.copy(
+            metadata = requireNotNull(automatic.metadata).copy(userFirmwareLabel = "Custom firmware"),
+        )
+        assertEquals("Custom firmware", custom.identityLine())
+        assertEquals(
+            "FM-1_015",
+            custom.copy(metadata = requireNotNull(custom.metadata).copy(userFirmwareLabel = null)).identityLine(),
+        )
+
+        val manual = automatic.copy(
+            metadata = BackupMetadata(
+                manualFamilySelection = DeviceFamily.SMK37,
+                userFirmwareLabel = "OpenPocket",
+            ),
+        )
+        assertEquals("OpenPocket", manual.identityLine())
+        assertEquals("", save().identityLine())
+        assertEquals("", save().copy(firmwareIdentity = "FM-1_909", metadata = BackupMetadata()).identityLine())
+    }
+
     @Test fun exportFilenameUsesVisibleNameAndAppendsHash() {
         val entry = save().copy(firmwareIdentity = "My FM-1")
         assertEquals("my-fm-1-$hash.bin", BackupStore.exportFileName(entry))
         assertEquals("fm-1-$hash.bin", BackupStore.exportFileName(entry.copy(firmwareIdentity = "FM/1")))
         assertEquals("m-vave-$hash.bin", BackupStore.exportFileName(entry.copy(firmwareIdentity = "M-VÁVE")))
-        assertEquals("firmware-unknown-$hash.bin", BackupStore.exportFileName(entry.copy(firmwareIdentity = "***")))
+        assertEquals("$hash.bin", BackupStore.exportFileName(entry.copy(firmwareIdentity = "***")))
+        assertEquals("$hash.bin", BackupStore.exportFileName(entry.copy(firmwareIdentity = null)))
     }
 
     @Test fun renameChangesOnlyTheIdAndKeepsBytes() {
@@ -138,7 +322,9 @@ class BackupStoreTest {
     @Test fun legacyBackupsHaveNoAssumedFirmware() {
         val entry = save()
         assertNull(entry.firmwareIdentity)
+        assertNull(entry.metadata)
         assertNull(BackupStore(directory).list().single().firmwareIdentity)
+        assertNull(BackupStore(directory).list().single().metadata)
     }
 
     @Test fun rejectsInvalidFirmwareMetadataBeforePublication() {

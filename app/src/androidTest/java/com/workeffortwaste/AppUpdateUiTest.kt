@@ -3,7 +3,6 @@ package com.workeffortwaste
 import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.test.assertIsDisplayed
@@ -14,6 +13,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -102,7 +103,16 @@ class AppUpdateUiTest {
         compose.onNodeWithText("Fixed backups").assertIsDisplayed()
         compose.onNodeWithText("## Changes").assertDoesNotExist()
         compose.onNodeWithText("**Bold** and *italic* text.").assertDoesNotExist()
-        compose.onNodeWithText("Read more").performTouchInput { click(Offset(12f, center.y)) }
+        val linkNode = compose.onNodeWithText("Read more", useUnmergedTree = true)
+        val layoutResults = mutableListOf<TextLayoutResult>()
+        linkNode.fetchSemanticsNode().config[SemanticsActions.GetTextLayoutResult].action?.invoke(layoutResults)
+        val text = layoutResults.single().layoutInput.text.text
+        val linkOffset = text.indexOf("Read more") + "Read more".length / 2
+        check(linkOffset >= "Read more".length / 2) { "Markdown link text is missing from its layout" }
+        val linkBounds = layoutResults.single().getBoundingBox(linkOffset)
+        linkNode.performTouchInput {
+            click(androidx.compose.ui.geometry.Offset(linkBounds.center.x, linkBounds.center.y))
+        }
         compose.runOnIdle { assertEquals("https://github.com/workeffortwaste", openedUri) }
     }
 

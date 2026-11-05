@@ -61,6 +61,7 @@ internal fun TransferScreenTransition(
                     operation = requireNotNull(screenState.transfer),
                     status = screenState.status,
                     progress = if (screenState.progressKnown) screenState.progress else null,
+                    deviceName = screenState.connectedDeviceDisplayName,
                     titleColor = titleColor,
                 )
             } else {
@@ -75,6 +76,7 @@ internal fun TransferProgressScreen(
     operation: FlashOperation,
     status: StatusMessage,
     progress: Float?,
+    deviceName: String? = null,
     titleColor: Color = MaterialTheme.colorScheme.primary,
 ) {
     val animatedProgress by animateFloatAsState(
@@ -111,7 +113,7 @@ internal fun TransferProgressScreen(
                     modifier = Modifier.size(48.dp),
                 )
                 Text(
-                    operation.title,
+                    operation.displayTitle(deviceName ?: "FM-1"),
                     style = MaterialTheme.typography.headlineMedium,
                     color = titleColor,
                     textAlign = TextAlign.Center,

@@ -31,6 +31,7 @@ class ImportBackupTest {
         InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
     private val resolver = application.contentResolver
     private val documents = mutableListOf<Uri>()
+    private val documentDirectory = "Download/FM-1-import-tests-${System.currentTimeMillis()}"
     private lateinit var model: BackupModel
     private var starts = 0
     private var originallyExempt = false
@@ -68,7 +69,7 @@ class ImportBackupTest {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-            put(MediaStore.Downloads.RELATIVE_PATH, "Download/FM-1-import-tests")
+            put(MediaStore.Downloads.RELATIVE_PATH, documentDirectory)
         }
         val uri = requireNotNull(resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values))
         documents += uri
@@ -110,14 +111,15 @@ class ImportBackupTest {
         val importCompletedAt = System.currentTimeMillis()
         val imported = model.state.backups.singleOrNull { it.firmwareIdentity == importName }
         assertNotNull(imported)
+        val importedBackup = requireNotNull(imported)
         assertTrue(
             "The library date should come from when the file is imported, not its filename",
-            requireNotNull(imported).createdAt in importStartedAt..importCompletedAt,
+            importedBackup.createdAt in importStartedAt..importCompletedAt,
         )
         assertEquals(0, starts)
         assertNull(model.state.selectedImport)
         assertEquals("Backup imported", model.state.status.heading)
-        compose.runOnIdle { model.deleteBackup(requireNotNull(imported).id) }
+        compose.runOnIdle { model.deleteBackup(importedBackup.id) }
         compose.waitUntil(timeoutMillis = 10000) { !model.state.busy }
     }
 
