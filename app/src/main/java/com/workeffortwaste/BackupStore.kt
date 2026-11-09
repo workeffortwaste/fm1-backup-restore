@@ -5,6 +5,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParseException
 import com.google.gson.JsonParser
 import com.workeffortwaste.protocol.BootSpiConfig
+import com.workeffortwaste.protocol.FlashAppIdentity
 import com.workeffortwaste.protocol.FlashRestore
 import com.workeffortwaste.protocol.Fm1Protocol
 import com.workeffortwaste.protocol.RestoreImage
@@ -15,7 +16,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
@@ -56,11 +56,6 @@ data class BackupEntry(
     val familyIsUserTagged: Boolean get() = metadata?.userFamily != null
     val familyIsManuallySelected: Boolean get() = metadata?.manualFamilySelection != null
 }
-
-internal val BackupEntry.needsLegacyFamilyUpgrade: Boolean
-    get() = taggedFamily == DeviceFamily.UNKNOWN && metadata?.userFamily == null &&
-            metadata?.manualFamilySelection == null &&
-            metadata?.classification?.origin != FamilyEvidenceOrigin.CONFLICT
 
 /** Shows an explicit custom tag, otherwise the captured M-UPGRADE identity. */
 fun BackupEntry.identityLine(): String {
@@ -150,16 +145,6 @@ class BackupStore(private val directory: File) {
             }
             if (valid) entry else null
         }.sortedWith(compareByDescending<BackupEntry> { it.createdAt }.thenByDescending { it.id })
-    }
-
-    /** Scans hash-verified legacy images and writes sidecars only for recognized, untagged families. */
-    fun upgradeLegacyFamilies(
-        entries: List<BackupEntry>,
-        progress: (completed: Int, total: Int) -> Unit = { _, _ -> },
-    ): List<BackupEntry> = entries.mapIndexed { index, entry ->
-        val upgraded = upgradeLegacyFamily(entry)
-        progress(index + 1, entries.size)
-        upgraded
     }
 
     fun open(id: String, checkCancelled: () -> Unit = {}): InputStream {
@@ -320,7 +305,16 @@ class BackupStore(private val directory: File) {
         }
     }
 
-    fun classifyImportedBackup(entry: BackupEntry): BackupEntry = upgradeLegacyFamily(entry)
+    fun classifyImportedBackup(entry: BackupEntry): BackupEntry {
+        val metadata = entry.metadata ?: BackupMetadata()
+        if (entry.taggedFamily != DeviceFamily.UNKNOWN ||
+            metadata.userFamily != null || metadata.manualFamilySelection != null ||
+            metadata.classification.origin == FamilyEvidenceOrigin.CONFLICT
+        ) return entry
+        val updated = metadata.copy(classification = readImageClassification(owned(entry.id), metadata))
+        writeMetadata(entry.id, updated)
+        return entry.copy(metadata = updated)
+    }
 
     private fun archiveMetadata(entry: BackupEntry): BackupArchiveMetadata = BackupArchiveMetadata(
         identifier = ARCHIVE_IDENTIFIER,
@@ -352,18 +346,30 @@ class BackupStore(private val directory: File) {
         require(createdAt in 1000000000000L..9999999999999L) { "Invalid backup date" }
         val metadata = json.objectValue("metadata")?.let { values ->
             val evidence = requireNotNull(values.objectValue("classification")) { "Backup classification is missing" }
+            val rawMidiIdentity = evidence.stringValue("rawMidiIdentity")
+            val spiSetting = evidence.stringValue("spiSetting")
+            val resetSetting = evidence.stringValue("resetSetting")
+            val jedecId = evidence.longValue("jedecId")
+            val smkTrimMarkerPresent =
+                requireNotNull(evidence.booleanValue("smkTrimMarkerPresent")) {
+                    "Backup trim evidence is missing"
+                }
+            val classification = DeviceClassification(
+                family = requireNotNull(
+                    evidence.enumValue<DeviceFamily>("family"),
+                ) { "Backup family is missing" },
+                origin = requireNotNull(evidence.enumValue<FamilyEvidenceOrigin>("origin")) { "Backup evidence origin is missing" },
+                confidence = requireNotNull(evidence.enumValue<FamilyEvidenceConfidence>("confidence")) { "Backup confidence is missing" },
+                rawMidiIdentity = rawMidiIdentity,
+                spiSetting = spiSetting,
+                resetSetting = resetSetting,
+                jedecId = jedecId,
+                smkTrimMarkerPresent = smkTrimMarkerPresent,
+                suggestedFamily = evidence.enumValue<DeviceFamily>("suggestedFamily"),
+                explanation = requireNotNull(evidence.stringValue("explanation")) { "Backup explanation is missing" },
+            )
             BackupMetadata(
-                classification = DeviceClassification(
-                    family = requireNotNull(evidence.enumValue<DeviceFamily>("family")) { "Backup family is missing" },
-                    origin = requireNotNull(evidence.enumValue<FamilyEvidenceOrigin>("origin")) { "Backup evidence origin is missing" },
-                    confidence = requireNotNull(evidence.enumValue<FamilyEvidenceConfidence>("confidence")) { "Backup confidence is missing" },
-                    rawMidiIdentity = evidence.stringValue("rawMidiIdentity"),
-                    spiSetting = evidence.stringValue("spiSetting"),
-                    jedecId = evidence.longValue("jedecId"),
-                    smkTrimMarkerPresent = requireNotNull(evidence.booleanValue("smkTrimMarkerPresent")) { "Backup trim evidence is missing" },
-                    suggestedFamily = evidence.enumValue<DeviceFamily>("suggestedFamily"),
-                    explanation = requireNotNull(evidence.stringValue("explanation")) { "Backup explanation is missing" },
-                ),
+                classification = classification,
                 editorFirmwareLabel = values.stringValue("editorFirmwareLabel"),
                 manualFamilySelection = values.enumValue<DeviceFamily>("manualFamilySelection"),
                 userFamily = values.enumValue<DeviceFamily>("userFamily"),
@@ -476,31 +482,21 @@ class BackupStore(private val directory: File) {
 
     private fun metadataFile(id: String): File = owned("${stableKey(id)}.meta")
 
-    private fun upgradeLegacyFamily(entry: BackupEntry): BackupEntry {
-        val metadata = entry.metadata ?: BackupMetadata()
-        if (!entry.needsLegacyFamilyUpgrade) return entry
-
-        val (spiSetting, trimMarkerPresent) = RandomAccessFile(owned(entry.id), "r").use { image ->
-            val bootArea = ByteArray(FlashRestore.PROTECTED_SIZE)
-            image.readFully(bootArea)
-            val spi = BootSpiConfig.extractSetting(bootArea)
-            image.seek(SMK_TRIM_MARKER_ADDRESS)
-            val marker = ByteArray(8)
-            image.readFully(marker)
-            spi to marker.contentEquals(byteArrayOf(0x74, 0x72, 0x69, 0x6d, 0x64, 0x61, 0x74, 0))
-        }
-        val classification = classifyLegacyBackup(
-            metadata.classification.rawMidiIdentity,
-            spiSetting,
+    private fun readImageClassification(file: File, metadata: BackupMetadata): DeviceClassification {
+        val image = file.readBytes()
+        val bootConfig = BootSpiConfig.extract(image)
+        val markerStart = SMK_TRIM_MARKER_ADDRESS.toInt()
+        val trimMarkerPresent = image.size >= markerStart + 8 &&
+                image.copyOfRange(markerStart, markerStart + 8)
+                    .contentEquals(byteArrayOf(0x74, 0x72, 0x69, 0x6d, 0x64, 0x61, 0x74, 0))
+        val midiIdentity = metadata.classification.rawMidiIdentity
+            ?: FlashAppIdentity.extract(image) { DeviceFamily.fromMidiIdentity(it) != DeviceFamily.UNKNOWN }
+        return classifyImportedImage(
+            midiIdentity,
+            bootConfig?.spiSetting,
             trimMarkerPresent,
+            bootConfig?.resetSetting,
         ).copy(jedecId = metadata.classification.jedecId)
-        if (classification.family == DeviceFamily.UNKNOWN && classification.origin != FamilyEvidenceOrigin.CONFLICT) {
-            return entry
-        }
-
-        val updatedMetadata = metadata.copy(classification = classification)
-        writeMetadata(entry.id, updatedMetadata)
-        return entry.copy(metadata = updatedMetadata)
     }
 
     /** Missing, malformed, or newer sidecars remain unknown rather than becoming inferred evidence. */
@@ -510,14 +506,20 @@ class BackupStore(private val directory: File) {
         return try {
             val values = Properties().apply { file.inputStream().use(::load) }
             if (values.getProperty("schema") != "1") return null
+            val midiIdentity = values.getProperty("midiIdentity")
+            val spiSetting = values.getProperty("spiSetting")
+            val resetSetting = values.getProperty("resetSetting")
+            val jedecId = values.getProperty("jedec")?.toLongOrNull(16)
+            val trimMarker = values.getProperty("trimMarker") == "true"
             val classification = DeviceClassification(
                 family = enumValue(values.getProperty("family")) ?: DeviceFamily.UNKNOWN,
                 origin = enumValue(values.getProperty("origin")) ?: FamilyEvidenceOrigin.UNKNOWN,
                 confidence = enumValue(values.getProperty("confidence")) ?: FamilyEvidenceConfidence.NONE,
-                rawMidiIdentity = values.getProperty("midiIdentity"),
-                spiSetting = values.getProperty("spiSetting"),
-                jedecId = values.getProperty("jedec")?.toLongOrNull(16),
-                smkTrimMarkerPresent = values.getProperty("trimMarker") == "true",
+                rawMidiIdentity = midiIdentity,
+                spiSetting = spiSetting,
+                resetSetting = resetSetting,
+                jedecId = jedecId,
+                smkTrimMarkerPresent = trimMarker,
                 suggestedFamily = enumValue(values.getProperty("suggestedFamily")),
                 explanation = values.getProperty("explanation") ?: "Device family is unknown",
             )
@@ -536,6 +538,7 @@ class BackupStore(private val directory: File) {
     private fun writeMetadata(id: String, metadata: BackupMetadata) {
         require(validMetadataText(metadata.classification.rawMidiIdentity, 256))
         require(validMetadataText(metadata.classification.spiSetting, 64))
+        require(validMetadataText(metadata.classification.resetSetting, 64))
         require(validMetadataText(metadata.classification.explanation, 512))
         require(validMetadataText(metadata.editorFirmwareLabel, 256))
         require(validMetadataText(metadata.userFirmwareLabel, MAX_NAME_LENGTH))
@@ -546,6 +549,7 @@ class BackupStore(private val directory: File) {
             setProperty("confidence", metadata.classification.confidence.name)
             setNullable("midiIdentity", metadata.classification.rawMidiIdentity)
             setNullable("spiSetting", metadata.classification.spiSetting)
+            setNullable("resetSetting", metadata.classification.resetSetting)
             metadata.classification.jedecId?.let { setProperty("jedec", "%06X".format(it)) }
             setProperty("trimMarker", metadata.classification.smkTrimMarkerPresent.toString())
             metadata.classification.suggestedFamily?.let { setProperty("suggestedFamily", it.name) }

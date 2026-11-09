@@ -59,7 +59,7 @@ internal fun BootloaderVerificationDialog(
                     Text(diagnosticsText, modifier = Modifier.verticalScroll(rememberScrollState()))
                 }
             } else if (state.recovery != null) {
-                EmergencyRecoveryContent(state.recovery, recoveryConnected)
+                EmergencyRecoveryContent(state.recovery, recoveryConnected, state.matchesStockV16)
             } else {
                 Column(
                     modifier = Modifier.sizeIn(maxHeight = 360.dp).verticalScroll(rememberScrollState()),
@@ -138,7 +138,11 @@ internal fun BootloaderVerificationDialog(
 }
 
 @Composable
-private fun EmergencyRecoveryContent(state: EmergencyRecoveryState, connected: Boolean) {
+private fun EmergencyRecoveryContent(
+    state: EmergencyRecoveryState,
+    connected: Boolean,
+    replacingStockV16: Boolean,
+) {
     Column(
         modifier = Modifier.sizeIn(maxHeight = 360.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -157,6 +161,11 @@ private fun EmergencyRecoveryContent(state: EmergencyRecoveryState, connected: B
                 }
             }
             EmergencyRecoveryStage.CONFIRM -> {
+                if (replacingStockV16) {
+                    Text(
+                        "This device has a verified stock v16 bootloader. Proceeding will replace it with stock v15; the recovery image available in this app is v15.",
+                    )
+                }
                 Text(
                     "Use this only as a last resort. Emergency recovery replaces the first 16 KiB of flash with the stock v15 bootloader and chip configuration from M-VAVE's official repository. Firmware, projects and settings outside this boot area are not changed.",
                 )

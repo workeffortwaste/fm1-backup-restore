@@ -522,9 +522,8 @@ class MainActivity : ComponentActivity() {
                     var hideDeviceTags by rememberSaveable {
                         mutableStateOf(setupPreferences.getBoolean("hide_device_tags", false))
                     }
-                    val legacyBackupUpgrade = model?.state?.legacyBackupUpgrade
                     BackHandler(enabled = showSettings) { showSettings = false }
-                    if (legacyBackupUpgrade == null && showBackupMilestonePrompt && resultSummary == null) {
+                    if (showBackupMilestonePrompt && resultSummary == null) {
                         AlertDialog(
                             onDismissRequest = {
                                 showBackupMilestonePrompt = false
@@ -566,7 +565,7 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                    resultSummary?.takeIf { legacyBackupUpgrade == null }?.let { summary ->
+                    resultSummary?.let { summary ->
                         AlertDialog(
                             onDismissRequest = { resultSummary = null },
                             title = { Text("Notification") },
@@ -583,11 +582,7 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                    if (legacyBackupUpgrade != null) {
-                        UpdatingSplashScreen(
-                            progress = legacyBackupUpgrade.fraction,
-                        )
-                    } else if (showWelcome) {
+                    if (showWelcome) {
                         WelcomeScreen(darkTheme = darkTheme) {
                             setupPreferences.edit { putBoolean("complete", true) }
                             model?.refresh()
@@ -1202,9 +1197,7 @@ class MainActivity : ComponentActivity() {
         hideDeviceTags: Boolean,
     ) {
         val state = model.state
-        val targetFamily = if (state.ready &&
-            state.deviceClassification.origin != FamilyEvidenceOrigin.CONFLICT
-        ) state.effectiveDeviceFamily else DeviceFamily.UNKNOWN
+        val targetFamily = if (state.ready) state.effectiveDeviceFamily else DeviceFamily.UNKNOWN
         val manualChoiceNeeded = state.requiresManualFamilySelection
         val manualPromptKey = if (state.ready && state.deviceMode == DeviceMode.DOWNLOAD) {
             state.device?.deviceName ?: "ready-recovery-session"
@@ -1320,11 +1313,15 @@ class MainActivity : ComponentActivity() {
             tagFirmwareLabel = entry?.metadata?.userFirmwareLabel.orEmpty()
         }
         LaunchedEffect(manualPromptKey, state.requiresManualFamilySelection) {
+            if (!state.canSelectDeviceManually) {
+                showManualFamilyPicker = false
+                manualFamilyChoice = null
+            }
             if (manualPromptKey == null) {
                 manualPromptedDevice = null
             } else if (manualChoiceNeeded && manualPromptedDevice != manualPromptKey) {
                 manualPromptedDevice = manualPromptKey
-                manualFamilyChoice = state.deviceClassification.suggestedFamily
+                manualFamilyChoice = null
                 showManualFamilyPicker = true
             }
         }
@@ -1357,34 +1354,18 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
-        if (showManualFamilyPicker) {
-            val classification = state.deviceClassification
-            val conflicting = classification.origin == FamilyEvidenceOrigin.CONFLICT
+        if (showManualFamilyPicker && state.canSelectDeviceManually) {
             AlertDialog(
                 onDismissRequest = {
                     showManualFamilyPicker = false
                     manualFamilyChoice = null
                 },
-                title = {
-                    Text(
-                        if (conflicting) "Conflicting device evidence — Select manually for backup only"
-                        else "Device not recognised",
-                    )
-                },
+                title = { Text("Select connected device") },
                 text = {
                     Column(
                         modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                            if (conflicting) {
-                                Text("M-UPGRADE: ${classification.rawMidiIdentity ?: "Unknown"}")
-                                Text("Boot SPI: ${classification.spiSetting ?: "Unknown"}")
-                                Text("JEDEC: ${classification.jedecId?.let { "%06X".format(it) } ?: "Unknown"}")
-                                Text("Trim: ${if (classification.smkTrimMarkerPresent) "Present" else "Not found"}")
-                                classification.suggestedFamily?.let { suggested ->
-                                    Text("Suggested by SPI + JEDEC: ${suggested.displayName}. Confirm manually.")
-                                }
-                        }
                         DeviceFamily.entries.filter { it != DeviceFamily.UNKNOWN }.forEach { family ->
                             Row(
                                 modifier = Modifier.fillMaxWidth().clickable { manualFamilyChoice = family },
@@ -1409,7 +1390,7 @@ class MainActivity : ComponentActivity() {
                             manualFamilyChoice = null
                         },
                     ) {
-                        Text(if (conflicting) "Select manually for backup only" else "Select manually and continue")
+                        Text("Use this device")
                     }
                 },
                 dismissButton = {
@@ -1840,6 +1821,7 @@ class MainActivity : ComponentActivity() {
                             val connectionFailed = state.status.heading.startsWith("Connection failed") ||
                                     state.status.heading.startsWith("Return to MIDI mode failed") ||
                                     state.status.heading.startsWith("Bootloader request failed") ||
+                                    state.status.heading == "Device identity could not be confirmed" ||
                                     state.status.heading.startsWith("Restore verification failed")
                             val showingBootloaderVerification = bootloaderVerificationState.working
                             val statusIcon = if (connectionFailed) R.drawable.ic_error
@@ -1878,12 +1860,10 @@ class MainActivity : ComponentActivity() {
                                             state.status.heading.startsWith("Waiting for ") ||
                                             state.status.heading.startsWith("Connecting to ")
                                     )
-                            if (state.ready && state.deviceMode == DeviceMode.DOWNLOAD &&
-                                (manualChoiceNeeded || state.deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT)
-                            ) {
+                            if (state.canSelectDeviceManually) {
                                 OutlinedButton(
                                     onClick = {
-                                        manualFamilyChoice = state.deviceClassification.suggestedFamily
+                                        manualFamilyChoice = null
                                         showManualFamilyPicker = true
                                     },
                                     enabled = editable,
@@ -1891,10 +1871,10 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                                 ) {
                                     Text(
-                                        if (state.deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT) {
-                                            "Select manually for backup only"
+                                        if (state.manualFamilySelection != null) {
+                                            "Change device selection"
                                         } else {
-                                            "Select device family"
+                                            "Select device"
                                         },
                                     )
                                 }

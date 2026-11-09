@@ -44,11 +44,11 @@ class TransferProgressScreenTest {
                     FlashOperation.RESTORE,
                     statusMessage("Restoring SMK-37", "Writing flash"),
                     0f,
-                    deviceName = "SMK-37 Pro / Elite",
+                    deviceName = "SMK-37 Elite",
                 )
             }
         }
-        compose.onNodeWithText("Restoring SMK-37 Pro / Elite").assertIsDisplayed()
+        compose.onNodeWithText("Restoring SMK-37 Elite").assertIsDisplayed()
     }
 
     @Test fun restoreCannotBeCancelledAndSupportsZeroProgress() {

@@ -184,7 +184,7 @@ class ImportBackupTest {
         val originalProgress = model.state.progress
         val metadata = BackupMetadata(
             classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
-            userFamily = DeviceFamily.SMK37, userFirmwareLabel = "Imported custom tag",
+            userFamily = DeviceFamily.SMK37_PRO, userFirmwareLabel = "Imported custom tag",
         )
         try {
             val bytes = ByteArray(FlashRestore.FLASH_SIZE) { (it * 31).toByte() }

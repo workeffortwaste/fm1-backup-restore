@@ -319,6 +319,42 @@ class ProtocolTest {
     }
 
     @Test
+    fun bootConfigReadsResetWithSpiAndValidatesAllRecords() {
+        fun config(vararg resets: String): ByteArray = configBlob("4_1_0_0") +
+            ByteArrayOutputStream().apply {
+                for (reset in resets) {
+                    write(reset.length)
+                    write("RESET".toByteArray(Charsets.US_ASCII))
+                    write(0)
+                    write(reset.toByteArray(Charsets.US_ASCII))
+                }
+            }.toByteArray()
+
+        for (reset in listOf("PB01_08_0", "PB01_00_0")) {
+            for (address in listOf(0x38d0, 0x3938)) {
+                val area = bootAreaWithConfig(config(reset), configAddress = address)
+                assertEquals(BootDeviceConfig("4_1_0_0", reset), BootSpiConfig.extract(area))
+                val scsi = RecordingScsi().apply {
+                    reply = { command ->
+                        val offset = ByteBuffer.wrap(command.cdb, 2, 4).int
+                        area.copyOfRange(offset, offset + command.inputLength)
+                    }
+                }
+                assertEquals(BootDeviceConfig("4_1_0_0", reset), Fm1Protocol(scsi).readBootDeviceConfig())
+                assertEquals(64, scsi.commands.size)
+            }
+        }
+        assertEquals(BootDeviceConfig("4_1_0_0"), BootSpiConfig.extract(bootAreaWithConfig(config())))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0", "PB01_08_0"))))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0", "PB01_00_0"))))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("bad\u0001"))))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0"), corruptConfigData = true)))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0"), corruptConfigEntry = true)))
+        val truncated = config("PB01_00_0").dropLast(1).toByteArray()
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(truncated)))
+    }
+
+    @Test
     fun smkMarkerReadUsesOnlyTheDocumentedEightByteAddress() {
         val marker = byteArrayOf(0x74, 0x72, 0x69, 0x6d, 0x64, 0x61, 0x74, 0)
         val scsi = RecordingScsi().apply { reply = { marker.copyOf() } }

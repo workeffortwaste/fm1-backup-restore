@@ -45,11 +45,13 @@ class BackupStoreTest {
         return store.publish(pending, hash)
     }
 
-    private fun saveLegacy(
+    private fun saveImage(
         name: String,
         spiSetting: String?,
         trimMarker: Boolean = false,
         metadata: BackupMetadata? = null,
+        resetSetting: String? = if (spiSetting == "4_1_0_0") "PB01_08_0" else null,
+        appIdentity: String? = null,
     ): BackupEntry {
         val image = bytes.copyOf()
         val config = ByteArrayOutputStream().apply {
@@ -63,6 +65,7 @@ class BackupStoreTest {
             }
             record("OSC", "OSC0")
             spiSetting?.let { record("SPI", it) }
+            resetSetting?.let { record("RESET", it) }
         }.toByteArray()
         val bootArea = ByteArray(FlashRestore.PROTECTED_SIZE) { 0xff.toByte() }
 
@@ -104,6 +107,39 @@ class BackupStoreTest {
         writeEntry(0x80, "key_mac", 0xff000, 0x1000, 0, 0x12)
         config.copyInto(bootArea, 0x100)
         bootArea.copyInto(image)
+        if (appIdentity != null) {
+            fun encodeKeyed(data: ByteArray, key: Int): ByteArray {
+                var state = key and 0xffff
+                return ByteArray(data.size) { index ->
+                    val value = data[index].toInt() xor (state and 0xff)
+                    state = ((state shl 1) xor (if (state and 0x8000 != 0) 0x1021 else 0)) and 0xffff
+                    value.toByte()
+                }
+            }
+            val payload = ByteArrayOutputStream().apply {
+                write("  32 Voice Save To ...  ".toByteArray(Charsets.US_ASCII))
+                write(0)
+                write(appIdentity.toByteArray(Charsets.US_ASCII))
+                write(0)
+                write(ByteArray(7))
+            }.toByteArray()
+            val base = FlashRestore.PROTECTED_SIZE
+            fun appRecord(relative: Int, recordName: String, address: Int, length: Int, dataCrc: Int) {
+                val record = ByteArray(32)
+                write16(record, 2, dataCrc)
+                write32(record, 4, address)
+                write32(record, 8, length)
+                recordName.toByteArray(Charsets.US_ASCII).copyInto(record, 16)
+                write16(record, 0, Fm1Protocol.crc16(record.copyOfRange(2, record.size)))
+                encodeKeyed(record, 0x980F xor (relative shr 2)).copyInto(image, base + relative)
+            }
+            appRecord(0, "app_area_head", 0x120, 0x40 + payload.size, 0xff83)
+            appRecord(0x20, "app.bin", 0x40, payload.size, Fm1Protocol.crc16(payload))
+            for (offset in payload.indices step 32) {
+                val chunk = payload.copyOfRange(offset, minOf(offset + 32, payload.size))
+                encodeKeyed(chunk, 0x980F xor ((0x40 + offset) shr 2)).copyInto(image, base + 0x40 + offset)
+            }
+        }
         if (trimMarker) {
             "trimdat\u0000".toByteArray(Charsets.US_ASCII)
                 .copyInto(image, com.workeffortwaste.protocol.SMK_TRIM_MARKER_ADDRESS.toInt())
@@ -125,7 +161,7 @@ class BackupStoreTest {
     @Test fun archiveRoundTripPreservesMetadataAndRejectsChangedHash() {
         val original = store.updateMetadata(save().id, BackupMetadata(
             classification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
-            userFamily = DeviceFamily.SMK37, userFirmwareLabel = "Custom tag",
+            userFamily = DeviceFamily.SMK37_PRO, userFirmwareLabel = "Custom tag",
         ))
         val output = ByteArrayOutputStream()
         store.exportBackupZip(original, output)
@@ -269,7 +305,7 @@ class BackupStoreTest {
 
         val tagged = captured.copy(
             manualFamilySelection = DeviceFamily.FM1,
-            userFamily = DeviceFamily.SMK37,
+            userFamily = DeviceFamily.SMK37_PRO,
             userFirmwareLabel = "Custom label",
         )
         val updated = store.updateMetadata(entry.id, tagged)
@@ -281,15 +317,51 @@ class BackupStoreTest {
         val restored = BackupStore(directory).list().single()
         assertEquals("Visible backup name", renamed.firmwareIdentity)
         assertEquals(tagged, restored.metadata)
-        assertEquals(DeviceFamily.SMK37, restored.taggedFamily)
+        assertEquals(DeviceFamily.SMK37_PRO, restored.taggedFamily)
         assertTrue(restored.familyIsUserTagged)
         assertTrue(restored.familyIsManuallySelected)
         store.open(restored.id).use { assertArrayEquals(bytes, it.readBytes()) }
         assertEquals(hash, restored.sha256)
     }
 
+    @Test fun keyboardModelEvidenceAndSelectionsPersistThroughRenameAndArchiveRoundTrip() {
+        val identities = listOf(
+            "SMK-37 Pro_016", "SMK-37 Elite_016", "STARRYKEY-37 PLAY_016", "MKE-P37_015",
+        )
+        for (identity in identities) {
+            val family = DeviceFamily.fromMidiIdentity(identity)
+            for (manual in listOf(false, true)) {
+                val metadata = if (manual) {
+                    BackupMetadata(
+                        classification = DeviceClassification(
+                            family = family, origin = FamilyEvidenceOrigin.MANUAL,
+                            smkTrimMarkerPresent = true,
+                        ),
+                        manualFamilySelection = family,
+                    )
+                } else {
+                    BackupMetadata(classifyDeviceFamily(identity, "4_1_0_0", 0xEB6014, true, "PB01_08_0"))
+                }
+                val pending = store.createPending().apply { writeBytes(bytes) }
+                val original = store.publishWithMetadata(pending, hash, identity.takeUnless { manual }, metadata)
+                val renamed = store.rename(original.id, "${family.displayName} snapshot")
+                val restored = BackupStore(directory).list().single { it.id == renamed.id }
+                assertEquals(family, restored.taggedFamily)
+                assertEquals(metadata, restored.metadata)
+                val archive = ByteArrayOutputStream()
+                store.exportBackupZip(restored, archive)
+                val target = BackupStore(File(root, "${family.name}-$manual"))
+                val imported = target.importZip(archive.toByteArray().inputStream()).single()
+                assertEquals(family, imported.taggedFamily)
+                assertEquals(metadata, imported.metadata)
+                assertEquals(hash, imported.sha256)
+                target.open(imported.id).use { assertArrayEquals(bytes, it.readBytes()) }
+            }
+        }
+    }
+
     @Test fun recoveryBackupWithoutMidiIdentityDoesNotPersistFirmwareTag() {
-        val classification = classifyDeviceFamily(null, "4_1_0_0", 0x856014, false)
+        val classification = classifyDeviceFamily(null, "4_1_0_0", 0x856014, false, "PB01_08_0")
         val pending = store.createPending().apply { writeBytes(bytes) }
         val entry = store.publishWithMetadata(
             pending,
@@ -307,12 +379,12 @@ class BackupStoreTest {
         assertEquals("", restored.identityLine())
     }
 
-    @Test fun legacyMigrationUsesFlashEvidenceAndPreservesNamesAndImages() {
-        val fm1 = saveLegacy("FM-1-looking filename", "4_1_0_0")
-        val pocketX = saveLegacy("Old Pocket X", "2_1_0_0")
-        val smk = saveLegacy("Snoop37", "4_1_0_0", trimMarker = true)
-        val unknown = saveLegacy("FM-1_015", null)
-        val custom = saveLegacy(
+    @Test fun importedImagesUseFlashEvidenceAndPreserveNamesAndImages() {
+        val fm1 = saveImage("FM-1-looking filename", "4_1_0_0")
+        val pocketX = saveImage("Pocket X", "2_1_0_0")
+        val smk = saveImage("Snoop37", "4_1_0_0", trimMarker = true)
+        val unknown = saveImage("FM-1_015", null)
+        val custom = saveImage(
             "My backup",
             "2_1_0_0",
             metadata = BackupMetadata(
@@ -320,25 +392,115 @@ class BackupStoreTest {
             ),
         )
         val originalHashById = listOf(fm1, pocketX, smk, unknown, custom).associate { it.id to it.sha256 }
-        val progress = mutableListOf<Pair<Int, Int>>()
+        val classified = store.list().map(store::classifyImportedBackup)
 
-        val upgraded = store.upgradeLegacyFamilies(store.list()) { completed, total ->
-            progress += completed to total
-        }
-
-        assertEquals(DeviceFamily.FM1, upgraded.single { it.id == fm1.id }.taggedFamily)
-        assertEquals(DeviceFamily.POCKETX_BLACKBOX, upgraded.single { it.id == pocketX.id }.taggedFamily)
-        assertEquals(DeviceFamily.SMK37, upgraded.single { it.id == smk.id }.taggedFamily)
-        assertEquals(DeviceFamily.UNKNOWN, upgraded.single { it.id == unknown.id }.taggedFamily)
-        val restoredCustom = upgraded.single { it.id == custom.id }
-        assertEquals(DeviceFamily.POCKETX_BLACKBOX, restoredCustom.taggedFamily)
+        assertEquals(DeviceFamily.FM1, classified.single { it.id == fm1.id }.taggedFamily)
+        val restoredPocketX = classified.single { it.id == pocketX.id }
+        assertEquals(DeviceFamily.POCKET_X, restoredPocketX.taggedFamily)
+        assertEquals(FamilyEvidenceOrigin.IMPORTED_IMAGE_SCAN, restoredPocketX.metadata?.classification?.origin)
+        assertEquals(restoredPocketX.metadata, BackupStore(directory).list().single { it.id == pocketX.id }.metadata)
+        assertEquals(DeviceFamily.UNKNOWN, classified.single { it.id == smk.id }.taggedFamily)
+        assertEquals(DeviceFamily.UNKNOWN, classified.single { it.id == unknown.id }.taggedFamily)
+        val restoredCustom = classified.single { it.id == custom.id }
+        assertEquals(DeviceFamily.POCKET_X, restoredCustom.taggedFamily)
         assertEquals("My custom label", restoredCustom.metadata?.userFirmwareLabel)
-        assertEquals((1..5).map { it to 5 }, progress)
 
-        upgraded.forEach { entry ->
+        classified.forEach { entry ->
             assertEquals(originalHashById.getValue(entry.id), entry.sha256)
             store.open(entry.id).use { assertEquals(FlashRestore.FLASH_SIZE, it.readBytes().size) }
         }
+    }
+
+    @Test fun pocketAmpEvidenceSurvivesRenameExportAndImportWithoutChangingImage() {
+        val classification = classifyDeviceFamily("Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0")
+        val original = saveImage(
+            "Onyx snapshot", "4_1_0_0",
+            metadata = BackupMetadata(classification, userFirmwareLabel = "Onyx 1.01"),
+            resetSetting = "PB01_00_0",
+        )
+        val renamed = store.rename(original.id, "Pocket AMP factory")
+        assertEquals(DeviceFamily.POCKET_AMP, renamed.taggedFamily)
+        assertEquals("PA", renamed.taggedFamily.backupTagLabel)
+        assertEquals(original.metadata, BackupStore(directory).list().single().metadata)
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(renamed, output)
+        val target = BackupStore(File(root, "pocket-import"))
+        val imported = target.importZip(output.toByteArray().inputStream()).single()
+        assertEquals(renamed.metadata, imported.metadata)
+        assertEquals(renamed.sha256, imported.sha256)
+        store.open(renamed.id).use { source ->
+            target.open(imported.id).use { copy -> assertArrayEquals(source.readBytes(), copy.readBytes()) }
+        }
+    }
+
+    @Test fun importedImageClassificationPreservesCapturedAndExplicitTags() {
+        val captured = BackupMetadata(
+            classification = DeviceClassification(
+                family = DeviceFamily.FM1,
+                origin = FamilyEvidenceOrigin.RECOVERY_BOOT_CONFIG,
+                confidence = FamilyEvidenceConfidence.HIGH,
+                spiSetting = "4_1_0_0",
+                jedecId = 0x856014,
+            ),
+            userFirmwareLabel = "Keep this label",
+        )
+        val pocket = saveImage("Pocket snapshot", "4_1_0_0", resetSetting = "PB01_00_0")
+        val automatic = saveImage("Captured tag", "4_1_0_0", metadata = captured, resetSetting = "PB01_00_0")
+        val tagged = saveImage(
+            "User tag", "4_1_0_0", metadata = captured.copy(userFamily = DeviceFamily.FM1),
+            resetSetting = "PB01_00_0",
+        )
+        val manual = saveImage(
+            "Manual tag", "4_1_0_0", metadata = captured.copy(manualFamilySelection = DeviceFamily.FM1),
+            resetSetting = "PB01_00_0",
+        )
+        val before = store.list().associate { it.id to it.sha256 }
+        val classified = store.list().map(store::classifyImportedBackup).associateBy { it.id }
+        assertEquals(DeviceFamily.UNKNOWN, classified.getValue(pocket.id).taggedFamily)
+        assertEquals(automatic.metadata, classified.getValue(automatic.id).metadata)
+        assertEquals(tagged.metadata, classified.getValue(tagged.id).metadata)
+        assertEquals(manual.metadata, classified.getValue(manual.id).metadata)
+        classified.values.forEach { assertEquals(before.getValue(it.id), it.sha256) }
+    }
+
+    @Test fun importedImageIdentityIsExtractedFromEncryptedApplication() {
+        val blackBox = saveImage(
+            "BlackBox import", "4_1_0_0", resetSetting = "PB01_00_0", appIdentity = "BlackBox_021",
+        )
+        val classified = store.classifyImportedBackup(blackBox)
+        assertEquals(DeviceFamily.BLACKBOX, classified.taggedFamily)
+        assertEquals("BlackBox_021", classified.metadata?.classification?.rawMidiIdentity)
+
+        // Without the stored identity, the shared Pocket AMP/BlackBox boot settings stay unresolved.
+        val anonymous = saveImage("Anonymous import", "4_1_0_0", resetSetting = "PB01_00_0")
+        assertEquals(DeviceFamily.UNKNOWN, store.classifyImportedBackup(anonymous).taggedFamily)
+
+        // A stored identity that contradicts the boot records never silently wins.
+        val conflicted = saveImage(
+            "Conflicted import", "4_1_0_0", resetSetting = "PB01_00_0", appIdentity = "FM-1_015",
+        )
+        val conflict = store.classifyImportedBackup(conflicted)
+        assertEquals(DeviceFamily.UNKNOWN, conflict.taggedFamily)
+        assertEquals(FamilyEvidenceOrigin.CONFLICT, conflict.metadata?.classification?.origin)
+    }
+
+    @Test fun archivesPreserveCapturedEvidenceWithoutReclassifyingBeforeDeduplication() {
+        val original = saveImage(
+            "Captured snapshot", "4_1_0_0", resetSetting = "PB01_00_0",
+            metadata = BackupMetadata(classification = DeviceClassification(
+                family = DeviceFamily.FM1,
+                origin = FamilyEvidenceOrigin.RECOVERY_BOOT_CONFIG,
+                confidence = FamilyEvidenceConfidence.MEDIUM,
+                spiSetting = "4_1_0_0",
+            )),
+        )
+        val archive = ByteArrayOutputStream()
+        store.exportBackupZip(original, archive)
+        val target = BackupStore(File(root, "captured-import"))
+        val imported = target.importZip(archive.toByteArray().inputStream()).single()
+        assertEquals(original.metadata, imported.metadata)
+        assertEquals(original.sha256, imported.sha256)
+        assertTrue(target.importZip(archive.toByteArray().inputStream()).isEmpty())
     }
 
     @Test fun identityLinePrefersCustomTagThenCapturedFirmwareAndNeverFallsBackToEditorName() {
@@ -360,7 +522,7 @@ class BackupStoreTest {
 
         val manual = automatic.copy(
             metadata = BackupMetadata(
-                manualFamilySelection = DeviceFamily.SMK37,
+                manualFamilySelection = DeviceFamily.SMK37_PRO,
                 userFirmwareLabel = "OpenPocket",
             ),
         )
@@ -530,12 +692,33 @@ class BackupStoreTest {
         assertTrue(targetDirectory.listFiles().orEmpty().isEmpty())
     }
 
-    @Test fun rawImportClassificationUsesLegacyFlashHeuristics() {
-        val original = saveLegacy("User chosen label", "2_1_0_0")
-        val classified = store.classifyImportedBackup(original)
-        assertEquals(DeviceFamily.POCKETX_BLACKBOX, classified.taggedFamily)
-        assertEquals(original.sha256, classified.sha256)
-        assertEquals(original.firmwareIdentity, classified.firmwareIdentity)
+    @Test fun importedImagesRequireBlackBoxIdentityAndRejectConflictingPocketX() {
+        val blackbox = saveImage(
+            "Backup label",
+            "4_1_0_0",
+            metadata = BackupMetadata(
+                classification = DeviceClassification(rawMidiIdentity = "BlackBox_924"),
+            ),
+            resetSetting = "PB01_00_0",
+        )
+
+        val classified = store.classifyImportedBackup(blackbox)
+
+        assertEquals(DeviceFamily.BLACKBOX, classified.taggedFamily)
+        assertEquals("BlackBox_924", classified.metadata?.classification?.rawMidiIdentity)
+
+        val pocketX = saveImage(
+            "Conflicting backup label",
+            "4_1_0_0",
+            metadata = BackupMetadata(
+                classification = DeviceClassification(rawMidiIdentity = "PocketX_009"),
+            ),
+            resetSetting = "PB01_00_0",
+        )
+        val classifiedPocketX = store.classifyImportedBackup(pocketX)
+        assertEquals(DeviceFamily.UNKNOWN, classifiedPocketX.taggedFamily)
+        assertEquals(FamilyEvidenceOrigin.CONFLICT, classifiedPocketX.metadata?.classification?.origin)
+        assertEquals("PocketX_009", classifiedPocketX.metadata?.classification?.rawMidiIdentity)
     }
 
     @Test fun zipRejectsDamagedFirmwareAndPropagatesWriteFailures() {
@@ -562,7 +745,7 @@ class BackupStoreTest {
         assertEquals(listOf(entry), store.list())
     }
 
-    @Test fun legacyBackupsHaveNoAssumedFirmware() {
+    @Test fun backupsWithoutMetadataHaveNoAssumedFirmware() {
         val entry = save()
         assertNull(entry.firmwareIdentity)
         assertNull(entry.metadata)

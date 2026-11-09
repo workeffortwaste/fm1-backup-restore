@@ -9,6 +9,8 @@ import android.os.SystemClock
 import androidx.compose.runtime.MutableState
 import androidx.compose.ui.test.junit4.v2.createEmptyComposeRule
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -112,6 +114,8 @@ class ScreenshotCapture {
         includePinnedFactory: Boolean = true,
         family: DeviceFamily = DeviceFamily.FM1,
         familyOverrides: Map<String, DeviceFamily> = emptyMap(),
+        firmwareLabelOverrides: Map<String, String> = emptyMap(),
+        metadataOverrides: Map<String, BackupMetadata> = emptyMap(),
     ) {
         seeded.forEach { it.delete() }
         seeded.clear()
@@ -121,8 +125,11 @@ class ScreenshotCapture {
         val now = System.currentTimeMillis()
         val factoryName = when (family) {
             DeviceFamily.FM1 -> pinnedName
-            DeviceFamily.SMK37 -> "Factory SMK-37 Pro"
-            DeviceFamily.POCKETX_BLACKBOX -> "Factory Pocket X"
+            DeviceFamily.SMK37_PRO, DeviceFamily.SMK37_ELITE,
+            DeviceFamily.STARRYKEY37_PLAY, DeviceFamily.MKE_P37 -> "Factory ${family.displayName}"
+            DeviceFamily.POCKET_X -> "Factory Pocket X"
+            DeviceFamily.BLACKBOX -> "Factory BlackBox"
+            DeviceFamily.POCKET_AMP -> "Factory Pocket AMP"
             DeviceFamily.UNKNOWN -> "Factory device"
         }
         val ordered = (if (includePinnedFactory) listOf(factoryName) else emptyList()) + names
@@ -134,12 +141,13 @@ class ScreenshotCapture {
             seeded += file
             store.updateMetadata(
                 file.name,
-                BackupMetadata(
+                metadataOverrides[name] ?: BackupMetadata(
                     classification = classificationFor(familyOverrides[name] ?: family),
                     userFamily = if ((familyOverrides[name] ?: family) == DeviceFamily.UNKNOWN) {
                         DeviceFamily.UNKNOWN
                     } else null,
-                    userFirmwareLabel = if (name == "SLOOP v2.8") "Custom SLOOP tag" else null,
+                    userFirmwareLabel = firmwareLabelOverrides[name]
+                        ?: if (name == "SLOOP v2.8") "Custom SLOOP tag" else null,
                     editorFirmwareLabel = name.takeIf { it.startsWith("FELUCCA") },
                 ),
             )
@@ -150,7 +158,6 @@ class ScreenshotCapture {
                 "pinned_backup_ids",
                 if (includePinnedFactory) setOf(seeded.first().name) else emptySet(),
             )
-            putBoolean("legacy_backup_family_upgrade_v1", true)
         }
     }
 
@@ -176,15 +183,26 @@ class ScreenshotCapture {
 
     private fun firmwareIdentityFor(family: DeviceFamily): String? = when (family) {
         DeviceFamily.FM1 -> connectedFirmware
-        DeviceFamily.SMK37 -> "SMK-37 Pro_016"
-        DeviceFamily.POCKETX_BLACKBOX -> "PocketX_924"
+        DeviceFamily.SMK37_PRO -> "SMK-37 Pro_016"
+        DeviceFamily.SMK37_ELITE -> "SMK-37 Elite_016"
+        DeviceFamily.STARRYKEY37_PLAY -> "STARRYKEY-37 PLAY_016"
+        DeviceFamily.MKE_P37 -> "MKE-P37_015"
+        DeviceFamily.POCKET_X -> "PocketX_924"
+        DeviceFamily.BLACKBOX -> "BlackBox_924"
+        DeviceFamily.POCKET_AMP -> "Pocket AMP_105"
         DeviceFamily.UNKNOWN -> null
     }
 
     private fun classificationFor(family: DeviceFamily): DeviceClassification = when (family) {
         DeviceFamily.FM1 -> classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false)
-        DeviceFamily.SMK37 -> classifyDeviceFamily("SMK-37 Pro_016", "4_1_0_0", 0xEB6014, true)
-        DeviceFamily.POCKETX_BLACKBOX -> classifyDeviceFamily("PocketX_924", "2_1_0_0", 0x856014, false)
+        DeviceFamily.SMK37_PRO, DeviceFamily.SMK37_ELITE,
+        DeviceFamily.STARRYKEY37_PLAY, DeviceFamily.MKE_P37 ->
+            classifyDeviceFamily(firmwareIdentityFor(family), "4_1_0_0", 0xEB6014, true)
+        DeviceFamily.POCKET_X -> classifyDeviceFamily("PocketX_924", "2_1_0_0", 0x856014, false)
+        DeviceFamily.BLACKBOX ->
+            classifyDeviceFamily("BlackBox_924", "4_1_0_0", 0x856014, false, "PB01_00_0")
+        DeviceFamily.POCKET_AMP ->
+            classifyDeviceFamily("Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0")
         DeviceFamily.UNKNOWN -> DeviceClassification()
     }
 
@@ -468,7 +486,6 @@ class ScreenshotCapture {
         captureUnknownDevicePicker()
         captureTagEditDialog()
         captureMixedFm1Library()
-        captureMigrationSplash()
         captureLatestReleaseNotes()
         captureBootloaderVerificationVariants()
     }
@@ -478,13 +495,23 @@ class ScreenshotCapture {
         val devices = listOf(
             Triple(
                 "smk37",
-                DeviceFamily.SMK37,
+                DeviceFamily.SMK37_PRO,
                 listOf("Snoop37_016", "SMK studio setup", "SLOOP v2.8"),
             ),
             Triple(
                 "pocketx",
-                DeviceFamily.POCKETX_BLACKBOX,
-                listOf("BlackBox_9xx", "OpenPocket 0.9.4", "Pocket X session"),
+                DeviceFamily.POCKET_X,
+                listOf("PocketX_924", "OpenPocket 0.9.4", "Pocket X session"),
+            ),
+            Triple(
+                "blackbox",
+                DeviceFamily.BLACKBOX,
+                listOf("BlackBox_924", "OpenPocket 0.9.4", "BlackBox session"),
+            ),
+            Triple(
+                "pocketamp",
+                DeviceFamily.POCKET_AMP,
+                listOf("Pocket AMP_105", "Onyx 1.01", "Pocket AMP session"),
             ),
         )
         devices.forEach { (name, family, backups) ->
@@ -500,14 +527,14 @@ class ScreenshotCapture {
 
     private fun captureSmkRestoreWarning() {
         setTheme(themes.first { it.fileName == "custom-black" })
-        seed(listOf("SMK-37 restore source"), includePinnedFactory = false, family = DeviceFamily.SMK37)
-        capture("custom-black-smk37-restore-warning", connectedFor(DeviceFamily.SMK37), navigate = {
+        seed(listOf("SMK-37 restore source"), includePinnedFactory = false, family = DeviceFamily.SMK37_PRO)
+        capture("custom-black-smk37-restore-warning", connectedFor(DeviceFamily.SMK37_PRO), navigate = {
             compose.onNodeWithContentDescription("Actions for SMK-37", substring = true).performClick()
             compose.onNodeWithText("Restore").performClick()
             compose.onNodeWithText(
-                "Only restore an SMK-37 backup to the exact physical keyboard it was created with, due to device specific calibration data.",
+                "Only restore a SMK-37 Pro backup to the exact physical keyboard it was created with, due to device specific calibration data.",
             ).performScrollTo().assertIsDisplayed()
-            compose.onNodeWithText("I confirm this backup was created with this exact physical SMK-37.")
+            compose.onNodeWithText("I confirm this backup was created with this exact physical SMK-37 Pro.")
                 .performScrollTo().assertIsDisplayed()
             compose.mainClock.advanceTimeBy(1000)
             SystemClock.sleep(600)
@@ -515,17 +542,95 @@ class ScreenshotCapture {
         })
     }
 
+    @Test
+    fun captureRecoveryIdentificationScenarios() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(emptyList(), includePinnedFactory = false)
+        val unknown = classifyDeviceFamily(null, null, 0x856014, false)
+        capture("direct-recovery-unrecognised", change = {
+            connectedFor(DeviceFamily.UNKNOWN).invoke(this).copy(
+                recoverySelectionRequired = true,
+                deviceClassification = unknown,
+                status = recoveryConnectionStatus(unknown, selectionRequired = true),
+            )
+        }, navigate = {
+            compose.onNodeWithText("Select connected device").assertIsDisplayed()
+            compose.onNodeWithText("FM-1").assertIsDisplayed()
+            for (prefix in listOf(
+                "Choose the connected product", "Detection candidate:", "M-UPGRADE:",
+                "Boot SPI:", "Boot RESET:", "JEDEC:", "SMK trim marker:", "Evidence:",
+            )) {
+                check(compose.onAllNodesWithText(prefix, substring = true).fetchSemanticsNodes().isEmpty())
+            }
+            compose.onNodeWithText("Use this device").assertIsNotEnabled()
+        })
+
+        val conflict = classifyDeviceFamily("PocketX_009", "4_1_0_0", 0x856014, false, "PB01_00_0")
+        capture("midi-to-recovery-identity-conflict", change = {
+            connectedFor(DeviceFamily.POCKET_X).invoke(this).copy(
+                firmwareIdentity = "PocketX_009",
+                recoverySelectionRequired = false,
+                manualFamilySelection = null,
+                deviceClassification = conflict,
+                status = recoveryConnectionStatus(conflict, selectionRequired = false),
+            )
+        }, navigate = {
+            compose.onNodeWithText("Conflicting evidence").assertIsDisplayed()
+            compose.onNodeWithText("Device identity could not be confirmed").assertIsDisplayed()
+            compose.onNodeWithText(
+                "Recovery checks disagree with the MIDI identity. Backup and restore are blocked.",
+            ).assertIsDisplayed()
+            check(compose.onAllNodesWithText("Backup Device").fetchSemanticsNodes().isEmpty())
+            compose.onNodeWithContentDescription("Return Device to MIDI mode").assertIsEnabled()
+            check(compose.onAllNodesWithText("Select connected device").fetchSemanticsNodes().isEmpty())
+        })
+    }
+
+    @Test
+    fun captureRecoveryPickerDisconnect() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(emptyList(), includePinnedFactory = false)
+        var target: BackupModel? = null
+        capture("recovery-picker-disconnected", change = {
+            connectedFor(DeviceFamily.UNKNOWN).invoke(this).copy(recoverySelectionRequired = true)
+        }, configure = { activity ->
+            target = ViewModelProvider(activity)[TransferConnection::class.java].model
+        }, navigate = {
+            compose.onNodeWithText("Select connected device").assertIsDisplayed()
+            compose.onNodeWithText("FM-1").performClick()
+            compose.onNodeWithText("Use this device").assertIsEnabled()
+            compose.runOnIdle {
+                val model = requireNotNull(target)
+                stateOf(model).value = model.state.rediscoverAfterDisconnect()
+            }
+            compose.waitForIdle()
+            check(compose.onAllNodesWithText("Select connected device").fetchSemanticsNodes().isEmpty())
+            check(compose.onAllNodesWithText("Use this device").fetchSemanticsNodes().isEmpty())
+        })
+    }
+
+    @Test
+    fun captureDirectRecoveryDeviceChoices() {
+        captureUnknownDevicePicker()
+    }
+
     private fun captureUnknownDevicePicker() {
         setTheme(themes.first { it.fileName == "custom-black" })
         seed(emptyList(), includePinnedFactory = false)
-        capture("custom-black-unknown-device-selection", connectedFor(DeviceFamily.UNKNOWN), navigate = {
-            compose.onNodeWithText("Device not recognised").assertIsDisplayed()
-            check(listOf("M-UPGRADE:", "Boot SPI:", "JEDEC:", "Trim:").all { label ->
-                compose.onAllNodesWithText(label, substring = true).fetchSemanticsNodes().isEmpty()
-            })
-            compose.onNodeWithText(DeviceFamily.FM1.displayName).assertIsDisplayed()
-            compose.onNodeWithText(DeviceFamily.SMK37.displayName).assertIsDisplayed()
-            compose.onNodeWithText(DeviceFamily.POCKETX_BLACKBOX.displayName).assertIsDisplayed()
+        capture("custom-black-unknown-device-selection", change = {
+            connectedFor(DeviceFamily.UNKNOWN).invoke(this).copy(
+                recoverySelectionRequired = true,
+                deviceClassification = classifyDeviceFamily(null, "4_1_0_0", 0xEB6014, true),
+            )
+        }, navigate = {
+            compose.onNodeWithText("Select connected device").assertIsDisplayed()
+            compose.onNodeWithText("Use this device").assertIsNotEnabled()
+            DeviceFamily.entries.filter { it != DeviceFamily.UNKNOWN }.forEach { family ->
+                compose.onNodeWithText(family.displayName).performScrollTo().assertIsDisplayed()
+            }
+            compose.onNodeWithText(DeviceFamily.MKE_P37.displayName).performScrollTo().performClick()
+            compose.onNodeWithText("Use this device").assertIsEnabled().performClick()
+            compose.onNodeWithText("MKE-P37 · Recovery mode", substring = true).assertIsDisplayed()
             compose.mainClock.advanceTimeBy(1000)
             SystemClock.sleep(600)
             instrumentation.waitForIdleSync()
@@ -548,35 +653,55 @@ class ScreenshotCapture {
         })
     }
 
+    @Test
+    fun captureMixedLibraryFirmwareLabels() {
+        captureMixedFm1Library()
+    }
+
     private fun captureMixedFm1Library() {
         setTheme(themes.first { it.fileName == "custom-black" })
-        val backups = listOf(
-            "FM-1 studio backup",
-            "SMK-37 Pro backup",
-            "OpenPocket backup",
+        val onyxBuild = "Pocket_AMP_Onyx_1.01-2611051015"
+        val firmware = linkedMapOf(
+            "JIANT V10.6c" to BackupMetadata(
+                classification = classifyDeviceFamily("FM-1_909", "4_1_0_0", 0x856014, false),
+                editorFirmwareLabel = "JIANT V10.6c",
+            ),
+            "SLOOP Pro 2.8.4" to BackupMetadata(
+                classification = classifyDeviceFamily("SMK-37 Pro_900", "4_1_0_0", 0xEB6014, true),
+                editorFirmwareLabel = "FELUCCA SLOOP PRO 2.8.4",
+            ),
+            "OpenPocket v33" to BackupMetadata(
+                classification = classifyDeviceFamily("PocketX_933", "2_1_0_0", 0x856014, false),
+                editorFirmwareLabel = "v33",
+            ),
         )
+        val backups = firmware.keys.toList() + onyxBuild
         seed(
             backups,
             familyOverrides = mapOf(
-                "SMK-37 Pro backup" to DeviceFamily.SMK37,
-                "OpenPocket backup" to DeviceFamily.POCKETX_BLACKBOX,
+                onyxBuild to DeviceFamily.POCKET_AMP,
             ),
+            firmwareLabelOverrides = mapOf(onyxBuild to "Pocket AMP_105"),
+            metadataOverrides = firmware,
         )
         capture("custom-black-mixed-fm1-connected", connected) {
+            backups.forEach { compose.onNodeWithText(it).assertIsDisplayed() }
+            val entries = store.list()
+            firmware.forEach { (name, metadata) ->
+                val entry = entries.single { it.firmwareIdentity == name }
+                check(entry.metadata == metadata)
+                check(entry.taggedFamily == metadata.classification.family)
+                check(!entry.familyIsUserTagged)
+                check(entry.metadata.userFirmwareLabel == null)
+                compose.onNodeWithText(
+                    requireNotNull(metadata.classification.rawMidiIdentity), substring = true,
+                ).assertIsDisplayed()
+            }
+            compose.onNodeWithText("Pocket AMP_105", substring = true).assertIsDisplayed()
+            compose.onNodeWithText("PA").assertIsDisplayed()
             check(compose.onAllNodesWithText("Unknown", substring = true).fetchSemanticsNodes().isEmpty())
             check(compose.onAllNodesWithText("Device type unknown", substring = true).fetchSemanticsNodes().isEmpty())
         }
     }
 
-    private fun captureMigrationSplash() {
-        setTheme(themes.first { it.fileName == "custom-black" })
-        seed(shortLibrary)
-        capture(
-            "custom-black-updating-backups",
-            change = { copy(legacyBackupUpgrade = BackupLibraryUpgradeProgress(completed = 2, total = 5)) },
-        ) {
-            compose.onNodeWithText("Updating").assertIsDisplayed()
-            compose.onNodeWithText("Checking backup 2 of 5").assertDoesNotExist()
-        }
-    }
 }

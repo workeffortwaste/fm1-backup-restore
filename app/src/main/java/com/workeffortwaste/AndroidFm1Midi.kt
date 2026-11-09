@@ -127,17 +127,20 @@ object AndroidFm1Midi {
 
                 @Suppress("DEPRECATION")
                 val usb = deviceInfo.properties.getParcelable<UsbDevice>(MidiDeviceInfo.PROPERTY_USB_DEVICE)
-                val editorIdentity = if (usb?.vendorId == 0x1209 && usb.productId == 1) {
+                val identity = FirmwareIdentity.query(
+                    includeLegacyEditor = usb?.vendorId == 0x1209 && usb.productId == 1,
+                    probeBuildCode = { mUpgradeIdentity ->
+                        // Only Onyx-family Pocket AMP firmware answers; skip its timeout elsewhere.
+                        mUpgradeIdentity == null ||
+                                DeviceFamily.fromMidiIdentity(mUpgradeIdentity) == DeviceFamily.POCKET_AMP
+                    },
+                ) { request, parse ->
                     readIdentity(
                         midiDevice, deviceInfo, send, checkCancelled,
-                        FirmwareIdentity.editorRequest(), FirmwareIdentity::parseEditor
+                        request, parse
                     )
-                } else null
-                val identity = readIdentity(
-                    midiDevice, deviceInfo, send, checkCancelled,
-                    FirmwareIdentity.request(), FirmwareIdentity::parse
-                )
-                onIdentity(MidiIdentityEvidence(identity, editorIdentity))
+                }
+                onIdentity(identity)
                 checkCancelled()
                 if (reboot) Fm1BootloaderMidi.send { bytes -> port.send(bytes, 0, bytes.size) }
             } catch (failure: Exception) {

@@ -135,6 +135,15 @@ class DeleteBackupDialogTest {
                 compose.onNodeWithText("Verify bootloader").assertIsNotEnabled()
                 compose.runOnIdle {
                     state.value = state.value.copy(
+                        firmwareIdentity = "Pocket AMP_105",
+                        deviceClassification = classifyDeviceFamily(
+                            "Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0",
+                        ),
+                    )
+                }
+                compose.onNodeWithText("Verify bootloader").assertIsNotEnabled()
+                compose.runOnIdle {
+                    state.value = state.value.copy(
                         firmwareIdentity = "FM-1_015",
                         deviceClassification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
                     )
@@ -202,6 +211,61 @@ class DeleteBackupDialogTest {
             .get(model)
         @Suppress("UNCHECKED_CAST")
         return delegate as MutableState<BackupState>
+    }
+
+    @Test fun pocketAmpBackupRowShowsPaTagAndKeepsManagementActions() {
+        val originalHideTags = preferences.getBoolean("hide_device_tags", false)
+        preferences.edit(commit = true) { putBoolean("hide_device_tags", false) }
+        try {
+            ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+                var model: BackupModel? = null
+                compose.waitUntil(timeoutMillis = 10000) {
+                    scenario.onActivity { activity ->
+                        model = ViewModelProvider(activity)[TransferConnection::class.java].model
+                    }
+                    model != null
+                }
+                val target = requireNotNull(model)
+                val state = backupState(target)
+                val original = target.state
+                val hash = "a".repeat(64)
+                val entry = BackupEntry(
+                    id = "fm1-1730000000000-1-$hash.bin",
+                    createdAt = 1730000000000L,
+                    sha256 = hash,
+                    firmwareIdentity = "Pocket snapshot",
+                    metadata = BackupMetadata(
+                        classification = classifyDeviceFamily(
+                            "Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0",
+                        ),
+                    ),
+                )
+                try {
+                    compose.runOnIdle {
+                        state.value = original.copy(
+                            ready = true,
+                            deviceMode = DeviceMode.DOWNLOAD,
+                            firmwareIdentity = "Pocket AMP_105",
+                            deviceClassification = requireNotNull(entry.metadata).classification,
+                            backups = listOf(entry),
+                            pinnedBackupIds = emptySet(),
+                            libraryLoading = false,
+                            libraryError = "",
+                        )
+                    }
+                    compose.onNodeWithText("PA").assertIsDisplayed()
+                    compose.onNodeWithText("Pocket snapshot").assertIsDisplayed()
+                    compose.onNodeWithContentDescription("Actions for Pocket AMP", substring = true).performClick()
+                    compose.onNodeWithText("Tag", useUnmergedTree = true).assertIsDisplayed()
+                    compose.onNodeWithText("Export", useUnmergedTree = true).assertIsDisplayed()
+                    compose.onNodeWithText("Already started flashing custom firmware?").assertDoesNotExist()
+                } finally {
+                    compose.runOnIdle { state.value = original }
+                }
+            }
+        } finally {
+            preferences.edit(commit = true) { putBoolean("hide_device_tags", originalHideTags) }
+        }
     }
 
     @Test fun pinningOnlyBackupHidesBackupsSectionAndUnpinningShowsItAgain() {

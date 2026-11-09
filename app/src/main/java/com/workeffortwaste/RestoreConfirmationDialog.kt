@@ -37,7 +37,7 @@ internal fun RestoreConfirmationDialog(
     manuallySelected: Boolean = false,
 ) {
     var sameUnitConfirmed by remember(backupName, targetFamily) { mutableStateOf(false) }
-    val smkTarget = targetFamily == DeviceFamily.SMK37
+    val smkTarget = targetFamily.isSmk37Family
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Restore ${targetFamily.displayName}") },
@@ -67,7 +67,7 @@ internal fun RestoreConfirmationDialog(
                     }
                 }
                 if (manuallySelected) {
-                    Text("Target family was manually selected and is not verified.")
+                    Text("The device model was manually selected and is not verified.")
                 }
                 if (!smkTarget) {
                     Text(
@@ -82,7 +82,7 @@ internal fun RestoreConfirmationDialog(
                 )
                 if (smkTarget) {
                     Text(
-                        "Only restore an SMK-37 backup to the exact physical keyboard it was created with, due to device specific calibration data.",
+                        "Only restore a ${targetFamily.displayName} backup to the exact physical keyboard it was created with, due to device specific calibration data.",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                     )
@@ -96,7 +96,7 @@ internal fun RestoreConfirmationDialog(
                             checked = sameUnitConfirmed,
                             onCheckedChange = { sameUnitConfirmed = it },
                         )
-                        Text("I confirm this backup was created with this exact physical SMK-37.")
+                        Text("I confirm this backup was created with this exact physical ${targetFamily.displayName}.")
                     }
                 }
             }

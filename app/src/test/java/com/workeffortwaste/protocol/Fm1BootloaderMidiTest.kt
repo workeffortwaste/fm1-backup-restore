@@ -14,6 +14,10 @@ class Fm1BootloaderMidiTest {
     fun recognizesNormalModeUsbIdOnlyWithMidiInterface() {
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xc755, true))
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0001, true))
+        assertTrue(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7756, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7756, false))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7757, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0x7756, true))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0001, false))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0003, true))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xc755, false))

@@ -7,6 +7,9 @@ local.properties
 *.iml
 .DS_Store
 
+# Additional local development directories
+dev/
+
 # Test artifacts
 screenshots/
 backups/

@@ -36,6 +36,16 @@ class BootloaderVerifierTest {
     }
 
     @Test
+    fun recognizesTheVerifiedStockV16BootAreaFingerprint() {
+        assertTrue(
+            BootloaderVerifier.isKnownStockV16(
+                "8f5228c2d6ea2068838ef4916f946bea877d14b07e6cfca49e41957f4c7b234f",
+            ),
+        )
+        assertFalse(BootloaderVerifier.isKnownStockV16("0".repeat(64)))
+    }
+
+    @Test
     fun identifiesMbootloaderVersionsFromAnEncryptedFlashBootArea() {
         for (version in listOf("1.1-e9a25e1", "1.2-22e2559")) {
             val result = BootloaderVerifier.identify(installedFm1BootArea(version))

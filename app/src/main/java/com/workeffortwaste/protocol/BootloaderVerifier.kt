@@ -5,12 +5,14 @@ import java.security.MessageDigest
 internal data class BootloaderVerificationResult(
     val sha256: String,
     val matchesStockV15: Boolean,
+    val matchesStockV16: Boolean = false,
     val identity: String? = null,
     val matchesPublishedRelease: Boolean = false,
 ) {
     val message: String
         get() = when {
             matchesStockV15 -> "Stock v15 bootloader SHA-256 matches the verified official image."
+            matchesStockV16 -> "Stock v16 bootloader SHA-256 matches the verified official image."
             identity != null && matchesPublishedRelease ->
                 "Identified as $identity. Reconstructed boot container SHA-256 matches the published release."
             identity != null ->
@@ -19,9 +21,10 @@ internal data class BootloaderVerificationResult(
         }
 }
 
-/** Reads the protected region and identifies stock v15 or a published m-bootloader container. */
+/** Reads the protected region and identifies stock v15/v16 or a published m-bootloader container. */
 internal object BootloaderVerifier {
     const val STOCK_V15_SHA256 = "d9f43191777656de01c7bed4f9e9ba2e34e94832c5d2ed02c3fc7ab7a6d9bd67"
+    const val STOCK_V16_SHA256 = "8f5228c2d6ea2068838ef4916f946bea877d14b07e6cfca49e41957f4c7b234f"
     private const val BOOT_AREA_SIZE = FlashRestore.PROTECTED_SIZE
     private const val BOOT_FILE_ADDRESS = 0xA0
     private const val MAX_BOOT_FILE_SIZE = 0x3830
@@ -58,6 +61,9 @@ internal object BootloaderVerifier {
         if (regionSha256 == STOCK_V15_SHA256) {
             return BootloaderVerificationResult(regionSha256, matchesStockV15 = true)
         }
+        if (regionSha256 == STOCK_V16_SHA256) {
+            return BootloaderVerificationResult(regionSha256, matchesStockV15 = false, matchesStockV16 = true)
+        }
         val container = extractBootContainer(protectedRegion)
             ?: return BootloaderVerificationResult(regionSha256, matchesStockV15 = false)
         val identity = parseMbootloaderIdentity(container)
@@ -72,6 +78,8 @@ internal object BootloaderVerifier {
     }
 
     fun isKnownStockV15(sha256: String): Boolean = sha256.equals(STOCK_V15_SHA256, ignoreCase = true)
+
+    fun isKnownStockV16(sha256: String): Boolean = sha256.equals(STOCK_V16_SHA256, ignoreCase = true)
 
     internal fun isKnownMbootloaderRelease(identity: String, containerSha256: String): Boolean =
         knownMbootloaderReleases[identity]?.equals(containerSha256, ignoreCase = true) == true

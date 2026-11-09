@@ -149,6 +149,25 @@ class BootloaderVerificationDialogTest {
     }
 
     @Test
+    fun verifiedV16RecoveryConfirmationWarnsThatItWillBeReplacedByV15() {
+        val state = BootloaderVerificationState(
+            showDialog = true,
+            sha256 = "8f5228c2d6ea2068838ef4916f946bea877d14b07e6cfca49e41957f4c7b234f",
+            matchesStockV16 = true,
+            recovery = EmergencyRecoveryState(stage = EmergencyRecoveryStage.CONFIRM),
+        )
+        compose.setContent {
+            MaterialExpressiveTheme {
+                BootloaderVerificationDialog(state, {}, recoveryConnected = true)
+            }
+        }
+
+        compose.onNodeWithText("This device has a verified stock v16 bootloader.", substring = true)
+            .assertIsDisplayed()
+        compose.onNodeWithText("Proceed at my own risk").assertIsEnabled()
+    }
+
+    @Test
     fun sameDialogChangesFromDownloadToConfirmationAndBlocksProceedOnDisconnect() {
         var state by mutableStateOf(BootloaderVerificationState(showDialog = true, sha256 = "a".repeat(64)))
         var connected by mutableStateOf(true)

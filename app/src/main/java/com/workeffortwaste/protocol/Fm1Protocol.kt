@@ -43,7 +43,9 @@ data class FlashInfo(val type: Int, val id: Long) {
         }
 }
 
-/** Reads the SPI record from the bounded, plain config blob in the boot area. */
+data class BootDeviceConfig(val spiSetting: String? = null, val resetSetting: String? = null)
+
+/** Reads device records from the bounded, CRC-validated config blob in the boot area. */
 internal object BootSpiConfig {
     private const val TABLE_START = 0x20
     private const val TABLE_END = 0xa0
@@ -54,7 +56,9 @@ internal object BootSpiConfig {
     private const val CONFIG_FILE_NAME = "isd_config.ini"
     private val settingValue = Regex("[0-9]+_[0-9]+_[0-9]+_[0-9]+")
 
-    fun extractSetting(bootArea: ByteArray): String? {
+    fun extractSetting(bootArea: ByteArray): String? = extract(bootArea)?.spiSetting
+
+    fun extract(bootArea: ByteArray): BootDeviceConfig? {
         val windowSize = minOf(bootArea.size, FlashRestore.PROTECTED_SIZE)
         if (windowSize < TABLE_END) return null
 
@@ -81,9 +85,10 @@ internal object BootSpiConfig {
         return configBlob?.let(::parseConfig)
     }
 
-    private fun parseConfig(blob: ByteArray): String? {
+    private fun parseConfig(blob: ByteArray): BootDeviceConfig? {
         var offset = CONFIG_PREFIX_SIZE
         var spi: String? = null
+        var reset: String? = null
         while (offset < blob.size) {
             val valueLength = blob[offset].toInt() and 0xff
             if (valueLength == 0 || valueLength == 0xff) break
@@ -100,9 +105,15 @@ internal object BootSpiConfig {
                 if (!settingValue.matches(value)) return null
                 spi = value
             }
+            if (name == "RESET") {
+                if (reset != null) return null
+                val bytes = blob.copyOfRange(valueStart, valueStart + valueLength)
+                if (bytes.any { (it.toInt() and 0xff) !in 32..126 }) return null
+                reset = String(bytes, Charsets.US_ASCII)
+            }
             offset = valueStart + valueLength
         }
-        return spi
+        return BootDeviceConfig(spi, reset)
     }
 
     private fun decrypt(bytes: ByteArray): ByteArray {
@@ -181,8 +192,10 @@ class Fm1Protocol(private val transport: ScsiTransport) {
         return FlashInfo(targetType, jedecId)
     }
 
-    /** Reads the protected boot area and extracts SPI from its referenced config blob. */
-    fun readBootSpiSetting(): String? {
+    fun readBootSpiSetting(): String? = readBootDeviceConfig()?.spiSetting
+
+    /** Reads SPI and RESET together without a second protected-area transfer. */
+    fun readBootDeviceConfig(): BootDeviceConfig? {
         val bootArea = ByteArray(FlashRestore.PROTECTED_SIZE)
         var offset = 0
         while (offset < bootArea.size) {
@@ -192,7 +205,7 @@ class Fm1Protocol(private val transport: ScsiTransport) {
             block.copyInto(bootArea, offset)
             offset += length
         }
-        return BootSpiConfig.extractSetting(bootArea)
+        return BootSpiConfig.extract(bootArea)
     }
 
     /** Reads the one documented SMK marker; absence is not evidence that the unit is not SMK-37. */

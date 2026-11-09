@@ -67,26 +67,6 @@ internal fun v15RecoveryBackupMetadata() = BackupMetadata(
     userFirmwareLabel = V15_RECOVERY_FIRMWARE_TAG,
 )
 
-internal fun shouldUpgradeLegacyBackupLibrary(
-    isDebugBuild: Boolean,
-    migrationDone: Boolean,
-    hasUnknownBackups: Boolean,
-): Boolean = !migrationDone || isDebugBuild && hasUnknownBackups
-
-data class BackupLibraryUpgradeProgress(
-    val completed: Int = 0,
-    val total: Int? = null,
-) {
-    val fraction: Float?
-        get() = total?.takeIf { it > 0 }?.let { (completed.toFloat() / it).coerceIn(0f, 1f) }
-    val message: String
-        get() = when (total) {
-            null -> "Checking saved backups for device type"
-            0 -> "No saved backups to update"
-            else -> "Checking backup ${completed.coerceAtMost(total)} of $total"
-        }
-}
-
 enum class FlashOperation(private val actionTitle: String, val label: String) {
     BACKUP("Backing up", "Backup"),
     RESTORE("Restoring", "Restore");
@@ -138,19 +118,20 @@ data class BootloaderVerificationState(
     val bytesRead: Int = 0,
     val sha256: String = "",
     val matchesStockV15: Boolean? = null,
+    val matchesStockV16: Boolean = false,
     val identity: String? = null,
     val matchesPublishedRelease: Boolean = false,
     val message: String = "",
     val recovery: EmergencyRecoveryState? = null,
 ) {
     val hasKnownHash: Boolean
-        get() = matchesStockV15 == true || (identity != null && matchesPublishedRelease)
+        get() = matchesStockV15 == true || matchesStockV16 || (identity != null && matchesPublishedRelease)
     val canRecover: Boolean
         get() = canRecover(debugOverride = false)
 
     /** Debug bypasses only hash recognition; the caller must separately require the verified connection. */
     fun canRecover(debugOverride: Boolean): Boolean =
-        sha256.isNotEmpty() && (!hasKnownHash || debugOverride) && !working
+        sha256.isNotEmpty() && (!hasKnownHash || matchesStockV16 || debugOverride) && !working
 }
 
 enum class EmergencyRecoveryStage { DOWNLOADING, CONFIRM, FLASHING, SUCCESS, FAILURE }
@@ -196,12 +177,33 @@ internal fun discoveryStatusMessage(noDevice: Boolean): StatusMessage = if (noDe
     statusMessage("Discovering supported device", "Searching for USB connection")
 }
 
+internal fun recoveryConnectionStatus(classification: DeviceClassification, selectionRequired: Boolean): StatusMessage =
+    when {
+        classification.origin == FamilyEvidenceOrigin.CONFLICT -> statusMessage(
+            "Device identity could not be confirmed",
+            "Recovery checks disagree with the MIDI identity. Backup and restore are blocked.",
+        )
+        selectionRequired -> statusMessage(
+            "Device connected in recovery mode",
+            "Select the connected device before backing up or restoring.",
+        )
+        classification.family == DeviceFamily.UNKNOWN -> statusMessage(
+            "Device identity could not be confirmed",
+            "The connected device model is unknown. Backup and restore are blocked.",
+        )
+        else -> statusMessage(
+            "${classification.family.displayName} successfully connected",
+            "Ready to backup or restore full flash",
+        )
+    }
+
 private val CONNECTION_STATUS_PREFIXES = listOf(
     "Reported firmware", "Firmware identity unavailable", "Waiting for ", "Connecting to ",
     "Ready to connect to ", "Returning ", "Switching ",
     "Waiting for USB permission", "USB permission denied", "USB permission request cancelled",
     "Connection failed", "Firmware query failed", "Bootloader request failed", "Waiting for MIDI connection",
     "Bootloader request cancelled", "Stopped waiting",
+    "Device identity could not be confirmed", "Device connected in recovery mode",
 )
 
 private fun isConnectionStatus(heading: String): Boolean =
@@ -233,6 +235,7 @@ internal fun BackupState.rediscoverAfterDisconnect(): BackupState = copy(
     editorFirmwareLabel = null,
     deviceClassification = DeviceClassification(),
     manualFamilySelection = null,
+    recoverySelectionRequired = false,
     status = StatusMessage(),
     hash = "",
 )
@@ -255,6 +258,7 @@ internal fun BackupState.returnToMidi(): BackupState {
         editorFirmwareLabel = null,
         deviceClassification = DeviceClassification(),
         manualFamilySelection = null,
+        recoverySelectionRequired = false,
         progress = 0f,
         transfer = null,
         progressKnown = false,
@@ -263,23 +267,31 @@ internal fun BackupState.returnToMidi(): BackupState {
     )
 }
 
+/**
+ * Makes a direct-recovery choice operative, even over conflicting classification evidence.
+ * Retains raw observations for diagnostics and metadata; transport/flash safety gates still apply.
+ */
 internal fun BackupState.withManualFamilySelection(family: DeviceFamily): BackupState {
     require(family != DeviceFamily.UNKNOWN)
-    val conflict = deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT
-    val classification = if (conflict) deviceClassification else deviceClassification.copy(
+    val detectedFamily = deviceClassification.family.takeIf { it != DeviceFamily.UNKNOWN }
+        ?: deviceClassification.suggestedFamily
+    val classification = deviceClassification.copy(
         family = family,
         origin = FamilyEvidenceOrigin.MANUAL,
         confidence = FamilyEvidenceConfidence.LOW,
-        explanation = "Family was manually selected and is not verified",
+        suggestedFamily = detectedFamily,
+        explanation = if (detectedFamily != null && detectedFamily != family ||
+            deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT
+        ) {
+            "User selected ${family.displayName} despite conflicting or different recovery evidence"
+        } else {
+            "Family was manually selected and is not verified"
+        },
     )
     return copy(
         deviceClassification = classification,
         manualFamilySelection = family,
-        status = if (conflict) {
-            statusMessage("Conflicting device evidence — backup only", deviceClassification.explanation)
-        } else {
-            statusMessage("Device family manually selected", "Manually selected — not verified")
-        },
+        status = recoveryConnectionStatus(classification, selectionRequired = false),
     )
 }
 
@@ -310,12 +322,12 @@ data class BackupState(
     val editorFirmwareLabel: String? = null,
     val deviceClassification: DeviceClassification = DeviceClassification(),
     val manualFamilySelection: DeviceFamily? = null,
+    val recoverySelectionRequired: Boolean = false,
     val connectionDiagnostics: String = "",
     val backups: List<BackupEntry> = emptyList(),
     val pinnedBackupIds: Set<String> = emptySet(),
     val libraryLoading: Boolean = true,
     val libraryError: String = "",
-    val legacyBackupUpgrade: BackupLibraryUpgradeProgress? = null,
     val progress: Float = 0f,
     val transfer: FlashOperation? = null,
     val progressKnown: Boolean = false,
@@ -327,11 +339,13 @@ data class BackupState(
     val showTransferProgress: Boolean get() = busy && transfer != null
     val isVerifiedFm1RecoverySession: Boolean
         get() = ready && deviceMode == DeviceMode.DOWNLOAD &&
-                deviceClassification.family == DeviceFamily.FM1 &&
-                deviceClassification.origin in setOf(
-                    FamilyEvidenceOrigin.MIDI_PLUS_RECOVERY,
-                    FamilyEvidenceOrigin.RECOVERY_SPI_JEDEC,
-                )
+                effectiveDeviceFamily == DeviceFamily.FM1 &&
+                (manualFamilySelection == DeviceFamily.FM1 ||
+                        deviceClassification.family == DeviceFamily.FM1 &&
+                        deviceClassification.origin in setOf(
+                            FamilyEvidenceOrigin.MIDI_PLUS_RECOVERY,
+                            FamilyEvidenceOrigin.RECOVERY_BOOT_CONFIG,
+                        ))
     val canOfferFm1RecoverySnapshot: Boolean
         get() = when (deviceMode) {
             DeviceMode.SEARCHING -> true
@@ -342,55 +356,43 @@ data class BackupState(
     val pinnedBackups: List<BackupEntry> get() = backups.filter { it.id in pinnedBackupIds }
     val unpinnedBackups: List<BackupEntry> get() = backups.filterNot { it.id in pinnedBackupIds }
     val midiFamilyHint: DeviceFamily get() = DeviceFamily.fromMidiIdentity(firmwareIdentity)
+    /** Only direct-recovery sessions permit a choice; MIDI-origin conflicts cannot be overridden. */
+    val canSelectDeviceManually: Boolean
+        get() = ready && deviceMode == DeviceMode.DOWNLOAD && recoverySelectionRequired
     val requiresManualFamilySelection: Boolean
-        get() = manualFamilySelection == null && deviceClassification.origin in setOf(
-            FamilyEvidenceOrigin.UNKNOWN,
-            FamilyEvidenceOrigin.MIDI_HINT,
-            FamilyEvidenceOrigin.CONFLICT,
-        )
+        get() = canSelectDeviceManually && manualFamilySelection == null
     val canBackUpWithFamily: Boolean
-        get() = when {
-            deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT -> manualFamilySelection != null
-            requiresManualFamilySelection -> false
-            else -> effectiveDeviceFamily != DeviceFamily.UNKNOWN
-        }
+        get() = !requiresManualFamilySelection && effectiveDeviceFamily != DeviceFamily.UNKNOWN
     val effectiveDeviceFamily: DeviceFamily
         get() = when {
-            deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT -> DeviceFamily.UNKNOWN
             manualFamilySelection != null -> manualFamilySelection
+            deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT -> DeviceFamily.UNKNOWN
+            // Direct recovery requires an explicit choice, even when classification has a candidate.
+            ready && deviceMode == DeviceMode.DOWNLOAD && recoverySelectionRequired -> DeviceFamily.UNKNOWN
             deviceClassification.family != DeviceFamily.UNKNOWN -> deviceClassification.family
             else -> midiFamilyHint
         }
     val connectedDeviceDisplayName: String
-        get() = (manualFamilySelection ?: effectiveDeviceFamily)
-            .takeIf { it != DeviceFamily.UNKNOWN }?.displayName ?: "???"
+        get() = effectiveDeviceFamily
+            .takeIf { it != DeviceFamily.UNKNOWN }?.displayName ?: "Device"
 
     val deviceStatus: String
         get() = when {
             deviceMode == DeviceMode.MULTIPLE -> deviceMode.label
-            deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT ->
-                manualFamilySelection?.let { "${it.displayName} · Conflicting evidence · Backup only" }
-                    ?: "??? · Conflicting device evidence"
-                deviceClassification.origin != FamilyEvidenceOrigin.CONFLICT &&
-                    midiFamilyHint != DeviceFamily.UNKNOWN && !firmwareIdentity.isNullOrBlank() &&
+            deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT -> "Conflicting evidence"
+            midiFamilyHint != DeviceFamily.UNKNOWN && !firmwareIdentity.isNullOrBlank() &&
                     (findingBootloader || deviceMode == DeviceMode.MIDI || deviceMode == DeviceMode.DOWNLOAD) -> {
                 val detail = if (deviceMode == DeviceMode.DOWNLOAD) "Recovery mode" else "MIDI mode"
                 val displayIdentity = editorFirmwareLabel?.takeIf { it.isNotBlank() } ?: firmwareIdentity
-                "$connectedDeviceDisplayName \u00b7 $displayIdentity$manualQualifier \u00b7 $detail"
+                "$connectedDeviceDisplayName \u00b7 $displayIdentity \u00b7 $detail"
             }
             findingBootloader && deviceMode != DeviceMode.DOWNLOAD ->
-                "$connectedDeviceDisplayName$manualQualifier \u00b7 MIDI mode"
-            ready && deviceMode == DeviceMode.DOWNLOAD ->
-                "$connectedDeviceDisplayName$manualQualifier \u00b7 Recovery mode"
-            deviceMode == DeviceMode.MIDI -> "$connectedDeviceDisplayName$manualQualifier \u00b7 MIDI mode"
-            deviceMode == DeviceMode.DOWNLOAD -> "$connectedDeviceDisplayName$manualQualifier \u00b7 Recovery mode"
+                "$connectedDeviceDisplayName \u00b7 MIDI mode"
+            deviceMode == DeviceMode.MIDI -> "$connectedDeviceDisplayName \u00b7 MIDI mode"
+            deviceMode == DeviceMode.DOWNLOAD -> "$connectedDeviceDisplayName \u00b7 Recovery mode"
             else -> deviceMode.label
         }
 
-    private val manualQualifier: String
-        get() = if (manualFamilySelection != null || deviceClassification.origin == FamilyEvidenceOrigin.MANUAL) {
-            " \u00b7 Manual"
-        } else ""
 }
 
 /**
@@ -532,7 +534,7 @@ class BackupModel(
                                 status = if (bootloaderVerificationState.recovery != null) current.status
                                 else statusMessage(
                                     "Connection failed",
-                                    "${current.connectedDeviceDisplayName.takeUnless { it == "???" } ?: "Device"} stopped responding. Refresh",
+                                    "${current.connectedDeviceDisplayName} stopped responding. Refresh",
                                 ),
                             )
                         }
@@ -548,10 +550,8 @@ class BackupModel(
     }
 
     init {
-        val legacyUpgradeDone = backupPreferences.getBoolean(LEGACY_BACKUP_UPGRADE_KEY, false)
         state = state.copy(
             pinnedBackupIds = backupPreferences.getStringSet(PINNED_BACKUP_IDS, emptySet()).orEmpty().toSet(),
-            legacyBackupUpgrade = if (legacyUpgradeDone) null else BackupLibraryUpgradeProgress(),
         )
         // The transport-specific callback overload requires API 33.
         @Suppress("DEPRECATION")
@@ -560,30 +560,7 @@ class BackupModel(
         mainHandler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS)
         worker.execute {
             try {
-                val entries = backupStore.list()
-                val shouldUpgrade = shouldUpgradeLegacyBackupLibrary(
-                    BuildConfig.DEBUG,
-                    legacyUpgradeDone,
-                    entries.any { it.needsLegacyFamilyUpgrade },
-                )
-                val backups = if (shouldUpgrade) {
-                    mainHandler.post {
-                        state = state.copy(
-                            legacyBackupUpgrade = BackupLibraryUpgradeProgress(total = entries.size),
-                        )
-                    }
-                    backupStore.upgradeLegacyFamilies(entries) { completed, total ->
-                        mainHandler.post {
-                            state = state.copy(legacyBackupUpgrade = BackupLibraryUpgradeProgress(completed, total))
-                        }
-                    }.also {
-                        if (!legacyUpgradeDone && !backupPreferences.edit()
-                                .putBoolean(LEGACY_BACKUP_UPGRADE_KEY, true).commit()
-                        ) {
-                            Log.w("BackupModel", "Could not persist legacy backup upgrade marker")
-                        }
-                    }
-                } else entries
+                val backups = backupStore.list()
                 post {
                     val pinned = it.pinnedBackupIds intersect backups.mapTo(mutableSetOf()) { entry -> entry.id }
                     if (pinned != it.pinnedBackupIds) savePinnedBackups(pinned)
@@ -591,14 +568,12 @@ class BackupModel(
                         backups = backups,
                         pinnedBackupIds = pinned,
                         libraryLoading = false,
-                        legacyBackupUpgrade = null,
                     )
                 }
             } catch (failure: Exception) {
                 post {
                     it.copy(
                         libraryLoading = false,
-                        legacyBackupUpgrade = null,
                         libraryError = "Could not load backups: ${failure.message}",
                     )
                 }
@@ -622,6 +597,7 @@ class BackupModel(
         val classification = state.deviceClassification
         val familyEvidence = "Family: ${classification.family.displayName}; origin=${classification.origin}; " +
             "confidence=${classification.confidence}; SPI=${classification.spiSetting ?: "Unknown"}; " +
+            "RESET=${classification.resetSetting ?: "Unknown"}; " +
             "JEDEC=${classification.jedecId?.let { "%06X".format(it) } ?: "Unknown"}; " +
             "SMK trim marker=${classification.smkTrimMarkerPresent}; " +
             "manual family=${state.manualFamilySelection?.displayName ?: "None"}; ${classification.explanation}"
@@ -664,6 +640,7 @@ class BackupModel(
                         working = false,
                         sha256 = result.sha256,
                         matchesStockV15 = result.matchesStockV15,
+                        matchesStockV16 = result.matchesStockV16,
                         identity = result.identity,
                         matchesPublishedRelease = result.matchesPublishedRelease,
                         message = result.message,
@@ -807,7 +784,7 @@ class BackupModel(
                 mainHandler.post {
                     state = state.copy(busy = false)
                     bootloaderVerificationState = bootloaderVerificationState.copy(
-                        working = false, sha256 = hash, matchesStockV15 = true,
+                        working = false, sha256 = hash, matchesStockV15 = true, matchesStockV16 = false,
                         identity = null, matchesPublishedRelease = false,
                         recovery = EmergencyRecoveryState(
                             stage = EmergencyRecoveryStage.SUCCESS,
@@ -860,6 +837,7 @@ class BackupModel(
                     editorFirmwareLabel = null,
                     deviceClassification = DeviceClassification(),
                     manualFamilySelection = null,
+                    recoverySelectionRequired = false,
                 )
             }
             updateDiscoveryTimer(false)
@@ -884,6 +862,7 @@ class BackupModel(
             editorFirmwareLabel = if (retainFirmware) state.editorFirmwareLabel else null,
             deviceClassification = if (retainFirmware) state.deviceClassification else DeviceClassification(),
             manualFamilySelection = if (retainFirmware) state.manualFamilySelection else null,
+            recoverySelectionRequired = if (retainFirmware) state.recoverySelectionRequired else false,
             ready = state.ready && mode == DeviceMode.DOWNLOAD && device?.deviceName == activeDeviceName,
             // A removed FM-1 must fall through to the no-connection state, not stale text.
             status = if (staleConnectionStatus) StatusMessage() else state.status,
@@ -918,6 +897,7 @@ class BackupModel(
             editorFirmwareLabel = null,
             deviceClassification = DeviceClassification(),
             manualFamilySelection = null,
+            recoverySelectionRequired = false,
             status = StatusMessage(),
             hash = "",
             progress = 0f,
@@ -938,7 +918,7 @@ class BackupModel(
     /** Requests an application reboot, closes USB, and lets normal discovery pick up MIDI again. */
     fun disconnect() {
         if (state.busy || !state.ready) return
-        val deviceName = state.connectedDeviceDisplayName.takeUnless { it == "???" } ?: "Device"
+        val deviceName = state.connectedDeviceDisplayName
         firmwareDeviceName = null
         firmwareMidiId = null
         queriedMidiId = null
@@ -991,7 +971,7 @@ class BackupModel(
                             midiManager?.let(AndroidFm1Midi::devices)?.singleOrNull()?.id == midiId
                     firmwareMidiId = midiId.takeIf { stillConnected }
                     val familyName = DeviceFamily.fromMidiIdentity(identity.mUpgradeIdentity)
-                        .takeIf { it != DeviceFamily.UNKNOWN }?.displayName ?: "???"
+                        .takeIf { it != DeviceFamily.UNKNOWN }?.displayName ?: "Device"
                     val status = when {
                         !stillConnected -> StatusMessage()
                         identity.mUpgradeIdentity == null -> statusMessage(
@@ -1484,6 +1464,8 @@ class BackupModel(
         if ((state.busy && !state.autoConnectPending) || state.ready) return
         val device = state.device ?: return
         verifiedBootloaderDeviceName = null
+        val recoverySelectionRequired = firmwareDeviceName != device.deviceName
+        firmwareDeviceName = device.deviceName
         val firmwareIdentity = state.firmwareIdentity
         val editorFirmwareLabel = state.editorFirmwareLabel
         val requestedDeviceName = state.connectedDeviceDisplayName
@@ -1502,6 +1484,7 @@ class BackupModel(
             busy = true, autoConnectPending = false, ready = false, hash = "", progress = 0f,
             deviceClassification = DeviceClassification(),
             manualFamilySelection = null,
+            recoverySelectionRequired = recoverySelectionRequired,
             status = statusMessage("Connecting to $requestedDeviceName", "Checking recovery mode and flash")
         )
         worker.execute {
@@ -1560,16 +1543,16 @@ class BackupModel(
                 val sample = deviceProtocol.readFlash(0, 256)
                 if (sample.size != 256) throw ProtocolException("Incomplete 256-byte flash sample")
                 traceConnection("256-byte flash sample read succeeded")
-                val spiSetting = deviceProtocol.readBootSpiSetting()
+                val bootConfig = deviceProtocol.readBootDeviceConfig()
+                val spiSetting = bootConfig?.spiSetting
                 traceConnection("Boot SPI setting: ${spiSetting ?: "Unknown"}")
+                traceConnection("Boot RESET setting: ${bootConfig?.resetSetting ?: "Unknown"}")
                 val smkTrimMarkerPresent = deviceProtocol.hasSmkTrimMarker()
                 traceConnection("SMK trim marker at 0x0C1224: $smkTrimMarkerPresent")
                 val classification = classifyDeviceFamily(
                     firmwareIdentity, spiSetting, flashInfo.id, smkTrimMarkerPresent,
+                    bootConfig?.resetSetting,
                 )
-                val resolvedDeviceName = classification.family.takeIf {
-                    it != DeviceFamily.UNKNOWN && classification.origin != FamilyEvidenceOrigin.CONFLICT
-                }?.displayName ?: "???"
                 traceConnection(
                     "Family classification: ${classification.family.displayName}; " +
                             "origin=${classification.origin}; confidence=${classification.confidence}; " +
@@ -1594,10 +1577,7 @@ class BackupModel(
                         firmwareIdentity = retainedIdentity,
                         editorFirmwareLabel = retainedEditorLabel,
                         deviceClassification = retainedClassification,
-                        status = statusMessage(
-                            "$resolvedDeviceName successfully connected",
-                            "Ready to backup or restore full flash",
-                        )
+                        status = recoveryConnectionStatus(retainedClassification, recoverySelectionRequired),
                     )
                 }
             } catch (failure: Exception) {
@@ -1860,9 +1840,7 @@ class BackupModel(
     }
 
     fun selectFamilyManually(family: DeviceFamily) {
-        if (state.busy || !state.ready || state.deviceMode != DeviceMode.DOWNLOAD ||
-            family == DeviceFamily.UNKNOWN
-        ) return
+        if (state.busy || !state.canSelectDeviceManually || family == DeviceFamily.UNKNOWN) return
         state = state.withManualFamilySelection(family)
     }
 
@@ -2283,7 +2261,6 @@ class BackupModel(
 
     private companion object {
         const val PINNED_BACKUP_IDS = "pinned_backup_ids"
-        const val LEGACY_BACKUP_UPGRADE_KEY = "legacy_backup_family_upgrade_v1"
         const val KEEPALIVE_INTERVAL_MS = 1000L
         const val DISCOVERY_TIMEOUT_MS = 3000L
     }

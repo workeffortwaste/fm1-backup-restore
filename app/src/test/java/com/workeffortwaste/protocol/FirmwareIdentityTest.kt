@@ -5,6 +5,131 @@ import org.junit.Test
 
 /** Covers read-only identity requests and strict parsing of supported-device MIDI replies/captures. */
 class FirmwareIdentityTest {
+    private fun pack(block: ByteArray): ByteArray {
+        val encoded = mutableListOf(0xf0.toByte())
+        for (offset in 0 until block.size * 8 step 7) {
+            var value = 0
+            for (bit in 0..6) {
+                val source = offset + bit
+                if (source < block.size * 8 &&
+                    (block[source / 8].toInt() and (1 shl (source % 8))) != 0
+                ) value = value or (1 shl bit)
+            }
+            encoded += value.toByte()
+        }
+        encoded += 0xf7.toByte()
+        return encoded.toByteArray()
+    }
+
+    private fun buildReply(
+        label: String,
+        packNumber: Int = 194,
+        change: (ByteArray) -> Unit = {},
+    ): ByteArray {
+        val payload = byteArrayOf(0xff.toByte(), 0, 0, label.length.toByte(), packNumber.toByte()) +
+                label.toByteArray(Charsets.US_ASCII)
+        val block = byteArrayOf(0, 0x59, 0x61, payload.size.toByte(), 0, 0) + payload + byteArrayOf(0)
+        change(block)
+        block[block.lastIndex] = block.slice(2 until block.lastIndex)
+            .sumOf { it.toInt() and 255 }.inv().toByte()
+        return pack(block)
+    }
+
+    @Test
+    fun buildQueryMatchesOnyxReadOnlyNamesRequest() {
+        assertArrayEquals(
+            pack(byteArrayOf(0, 0x59, 0x51, 2, 0, 0, 0xff.toByte(), 0, 0xad.toByte())),
+            FirmwareIdentity.buildCodeRequest(),
+        )
+    }
+
+    @Test
+    fun readsBuildLabelsWithoutPinningFirmwareNameModelOrPackNumber() {
+        for (label in listOf("Pocket_AMP_Onyx_1.01-2611051015", "Fork 2.0", "x", "x".repeat(40))) {
+            for (packNumber in listOf(0, 194, 255)) {
+                assertEquals(label, FirmwareIdentity.parseBuildCode(buildReply(label, packNumber)))
+            }
+        }
+    }
+
+    @Test
+    fun rejectsMalformedBuildRepliesAndOrdinaryNamePages() {
+        val valid = buildReply("Pocket_AMP_Onyx_1.01-2611051015")
+        for (invalid in listOf(
+            byteArrayOf(), valid.dropLast(1).toByteArray(),
+            valid.copyOf().apply { this[0] = 0 },
+            valid.copyOf().apply { this[1] = 0x80.toByte() },
+            valid.copyOf().apply { this[lastIndex - 2] = (this[lastIndex - 2].toInt() xor 1).toByte() },
+            valid.copyOf().apply { this[lastIndex - 1] = (this[lastIndex - 1].toInt() or 0x40).toByte() },
+            buildReply(""), buildReply(" "), buildReply("x".repeat(41)), buildReply("Bad\u0001"),
+            buildReply("Onyx") { it[1] = 0x58 },
+            buildReply("Onyx") { it[2] = 0x60 },
+            buildReply("Onyx") { it[3] = 8 },
+            buildReply("Onyx") { it[4] = 1 },
+            buildReply("Onyx") { it[5] = 1 },
+            buildReply("Onyx") { it[6] = 0 },
+            buildReply("Onyx") { it[7] = 1 },
+            buildReply("Onyx") { it[8] = 1 },
+            buildReply("Onyx") { it[9] = 5 },
+            editorReply("JIANT 0.9.12"), reply("Pocket AMP_105"),
+        )) {
+            assertNull(FirmwareIdentity.parseBuildCode(invalid))
+        }
+    }
+
+    @Test
+    fun pocketAmpIdentityTriggersBuildCodeProbeAndItsLabelWins() {
+        val requests = mutableListOf<List<Byte>>()
+        val label = "Pocket_AMP_Onyx_1.01-2611051015"
+        val evidence = FirmwareIdentity.query(
+            includeLegacyEditor = true,
+            probeBuildCode = { it == null || it.startsWith("Pocket AMP") },
+        ) { request, parse ->
+            requests += request.toList()
+            parse(if (requests.size == 1) reply("Pocket AMP_105") else buildReply(label))
+        }
+        assertEquals(
+            listOf(FirmwareIdentity.request().toList(), FirmwareIdentity.buildCodeRequest().toList()),
+            requests,
+        )
+        assertEquals(MidiIdentityEvidence("Pocket AMP_105", label), evidence)
+    }
+
+    @Test
+    fun nonPocketAmpIdentitySkipsBuildCodeAndFallsBackToLegacyEditor() {
+        for (includeLegacyEditor in listOf(false, true)) {
+            for (legacyLabel in listOf(null, "JIANT 0.9.12")) {
+                val requests = mutableListOf<List<Byte>>()
+                val evidence = FirmwareIdentity.query(
+                    includeLegacyEditor,
+                    probeBuildCode = { it == null || it.startsWith("Pocket AMP") },
+                ) { request, parse ->
+                    requests += request.toList()
+                    when {
+                        request.contentEquals(FirmwareIdentity.editorRequest()) -> legacyLabel?.let { parse(editorReply(it)) }
+                        else -> parse(reply("FM-1_900"))
+                    }
+                }
+                val expected = mutableListOf(FirmwareIdentity.request().toList())
+                if (includeLegacyEditor) expected += FirmwareIdentity.editorRequest().toList()
+                assertEquals(expected, requests)
+                assertEquals(MidiIdentityEvidence("FM-1_900", legacyLabel.takeIf { includeLegacyEditor }), evidence)
+            }
+        }
+    }
+
+    @Test
+    fun absentRepliesStayUnknownAndTransportFailuresPropagate() {
+        assertEquals(MidiIdentityEvidence(), FirmwareIdentity.query(true) { _, _ -> null })
+        val failure = IllegalStateException("disconnected")
+        try {
+            FirmwareIdentity.query(true) { _, _ -> throw failure }
+            fail("Expected transport failure")
+        } catch (actual: IllegalStateException) {
+            assertSame(failure, actual)
+        }
+    }
+
     private fun editorReply(label: String): ByteArray =
         byteArrayOf(0xf0.toByte(), 0x7d, 0x46, 0x4c, 1) +
                 label.toByteArray(Charsets.US_ASCII) + byteArrayOf(0, 15, 123, 66, 32, 0xf7.toByte())
@@ -18,8 +143,8 @@ class FirmwareIdentityTest {
     }
 
     @Test
-    fun editorInfoReportsFirmwareAndVersion() {
-        for (label in listOf("JIANT 0.9.12", "FELUCCA v1.4.1")) {
+    fun editorInfoAcceptsAnyFeluccaProtocolFirmwareLabel() {
+        for (label in listOf("JIANT 0.9.12", "FELUCCA v1.4.1", "X0X 1.2.3", "SLOOP v2.8", "Fork")) {
             assertEquals(label, FirmwareIdentity.parseEditor(editorReply(label)))
         }
         assertNull(FirmwareIdentity.parseEditor(reply("FM-1_900")))
@@ -32,7 +157,7 @@ class FirmwareIdentityTest {
             valid.copyOf().apply { this[4] = 2 },
             valid.copyOf().apply { this[lastIndex] = 0 },
             valid.copyOf().apply { this[6] = 0x80.toByte() },
-            editorReply(""), editorReply("OTHER 1.0"), editorReply("JIANT " + "x".repeat(20)),
+            editorReply(""), editorReply("   "), editorReply("JIANT " + "x".repeat(20)),
             editorReply("JIANT \u0001"), byteArrayOf(),
         )) {
             assertNull(FirmwareIdentity.parseEditor(invalid))

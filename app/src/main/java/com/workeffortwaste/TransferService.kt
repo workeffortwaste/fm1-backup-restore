@@ -82,7 +82,7 @@ class TransferService : Service() {
                 model.bootloaderVerificationState.recovery == null
             ) {
                 val state = model.state
-                val deviceName = state.connectedDeviceDisplayName.takeUnless { it == "???" } ?: "Device"
+                val deviceName = state.connectedDeviceDisplayName
                 val summary = state.status.asNotificationText() +
                         if (state.hash.isNotEmpty()) "\n${state.hashLabel}: ${state.hash}" else ""
                 val reopen = PendingIntent.getActivity(
