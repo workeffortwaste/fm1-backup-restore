@@ -23,6 +23,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.workeffortwaste.protocol.FlashRestore
 import org.junit.After
 import org.junit.Before
+import org.junit.BeforeClass
 import org.junit.Rule
 import org.junit.Test
 import java.io.File
@@ -34,6 +35,19 @@ import org.json.JSONObject
 
 /** Captures themed, device-family, transfer, Settings, release-note, and bootloader screens. */
 class ScreenshotCapture {
+    companion object {
+        @BeforeClass
+        @JvmStatic
+        fun prepareOutputDirectory() {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val directory = File(context.getExternalFilesDir(null), "theme-screenshots")
+            check(!directory.exists() || directory.deleteRecursively()) {
+                "Could not clear screenshot directory: $directory"
+            }
+            check(directory.mkdirs()) { "Could not create screenshot directory: $directory" }
+        }
+    }
+
     @get:Rule
     val compose = createEmptyComposeRule()
 
@@ -74,8 +88,6 @@ class ScreenshotCapture {
     fun prepare() {
         originalSetup = setupPreferences.all
         originalBackupPreferences = backupPreferences.all
-        outputDirectory.deleteRecursively()
-        check(outputDirectory.mkdirs()) { "Could not create screenshot directory: $outputDirectory" }
         shell("dumpsys deviceidle whitelist +${context.packageName}")
     }
 
