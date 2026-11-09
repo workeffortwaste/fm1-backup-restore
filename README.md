@@ -23,11 +23,6 @@ The latest version can be downloaded from the link below or from the releases se
   <img width="300" alt="custom-black-backup-75" src="https://github.com/user-attachments/assets/b0d8015a-6e8b-4590-aeb8-e3764a07eb92" alt="Backup progress in the Black theme"/>
 </p>
 
-<img width="1080" height="2400" alt="custom-black-blackbox-backup-75" src="https://github.com/user-attachments/assets/ff95e9e6-f9d2-4f56-844a-545ed7f54a43" />
-<img width="1080" height="2400" alt="custom-black-mixed-fm1-connected" src="https://github.com/user-attachments/assets/188c1ddd-ef53-4da4-a872-152f37d54b02" />
-<img width="1080" height="2400" alt="custom-black-empty" src="https://github.com/user-attachments/assets/8078d407-80bb-4cf0-ad0e-f401d47334d2" />
-<img width="1080" height="2400" alt="custom-black-connected" src="https://github.com/user-attachments/assets/3cb5640b-7264-4c06-818c-ebfd2ddcd5b7" />
-
 ## Use cases
 
 #### Keep a factory-fresh backup
@@ -58,10 +53,19 @@ This tool is provided as-is. Use it at your own risk, and I accept no responsibi
 
 ## Supported device families
 
-Whilst the README is FM-1 focused the app supports FM-1, **MiniFM** (tag **MiniFM**), **SMK-37 Pro** (tag **SMK-P**), **SMK-37 Elite**
-(tag **SMK-E**), **Starrykey-37 PLAY** (tag **SK37**), **MKE-P37**
-(tag **MKE37**), Pocket X (tag **PX**),
-BlackBox (tag **BB**), and **Pocket AMP** (tag **PA**).
+Whilst the README is FM-1 focused the app supports the following devices:
+
+| Device | Tag |
+| --- | --- |
+| FM-1 | FM-1 |
+| MiniFM | MiniFM |
+| SMK-37 Pro | SMK-P |
+| SMK-37 Elite | SMK-E |
+| Starrykey-37 PLAY | SK37 |
+| MKE-P37 | MKE37 |
+| Pocket X | PX |
+| BlackBox | BB |
+| Pocket AMP | PA |
 
 ## Using the app
 
