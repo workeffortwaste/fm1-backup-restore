@@ -6,9 +6,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BackupStateTest {
+    @Test fun legacyBackupUpgradeIsOneTimeAndDebugRescansUnknowns() {
+        assertTrue(shouldUpgradeLegacyBackupLibrary(isDebugBuild = false, migrationDone = false, hasUnknownBackups = false))
+        assertFalse(shouldUpgradeLegacyBackupLibrary(isDebugBuild = false, migrationDone = true, hasUnknownBackups = true))
+        assertFalse(shouldUpgradeLegacyBackupLibrary(isDebugBuild = true, migrationDone = true, hasUnknownBackups = false))
+        assertTrue(shouldUpgradeLegacyBackupLibrary(isDebugBuild = true, migrationDone = true, hasUnknownBackups = true))
+    }
+
     @Test fun allDeviceModelsShareTheSameRecoverySelectionRoutes() {
         val identities = mapOf(
             DeviceFamily.FM1 to "FM-1_015",
+            DeviceFamily.MINI_FM to "MiniFM_015",
             DeviceFamily.SMK37_PRO to "SMK-37 Pro_016",
             DeviceFamily.SMK37_ELITE to "SMK-37 Elite_016",
             DeviceFamily.STARRYKEY37_PLAY to "STARRYKEY-37 PLAY_016",

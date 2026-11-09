@@ -125,6 +125,7 @@ class ScreenshotCapture {
         val now = System.currentTimeMillis()
         val factoryName = when (family) {
             DeviceFamily.FM1 -> pinnedName
+            DeviceFamily.MINI_FM -> "Factory MiniFM"
             DeviceFamily.SMK37_PRO, DeviceFamily.SMK37_ELITE,
             DeviceFamily.STARRYKEY37_PLAY, DeviceFamily.MKE_P37 -> "Factory ${family.displayName}"
             DeviceFamily.POCKET_X -> "Factory Pocket X"
@@ -183,6 +184,7 @@ class ScreenshotCapture {
 
     private fun firmwareIdentityFor(family: DeviceFamily): String? = when (family) {
         DeviceFamily.FM1 -> connectedFirmware
+        DeviceFamily.MINI_FM -> "MiniFM_015"
         DeviceFamily.SMK37_PRO -> "SMK-37 Pro_016"
         DeviceFamily.SMK37_ELITE -> "SMK-37 Elite_016"
         DeviceFamily.STARRYKEY37_PLAY -> "STARRYKEY-37 PLAY_016"
@@ -195,6 +197,7 @@ class ScreenshotCapture {
 
     private fun classificationFor(family: DeviceFamily): DeviceClassification = when (family) {
         DeviceFamily.FM1 -> classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false)
+        DeviceFamily.MINI_FM -> classifyDeviceFamily("MiniFM_015", "4_1_0_0", 0x856014, false)
         DeviceFamily.SMK37_PRO, DeviceFamily.SMK37_ELITE,
         DeviceFamily.STARRYKEY37_PLAY, DeviceFamily.MKE_P37 ->
             classifyDeviceFamily(firmwareIdentityFor(family), "4_1_0_0", 0xEB6014, true)
@@ -486,6 +489,7 @@ class ScreenshotCapture {
         captureUnknownDevicePicker()
         captureTagEditDialog()
         captureMixedFm1Library()
+        captureMigrationSplash()
         captureLatestReleaseNotes()
         captureBootloaderVerificationVariants()
     }
@@ -701,6 +705,17 @@ class ScreenshotCapture {
             compose.onNodeWithText("PA").assertIsDisplayed()
             check(compose.onAllNodesWithText("Unknown", substring = true).fetchSemanticsNodes().isEmpty())
             check(compose.onAllNodesWithText("Device type unknown", substring = true).fetchSemanticsNodes().isEmpty())
+        }
+    }
+
+    private fun captureMigrationSplash() {
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(shortLibrary)
+        capture("custom-black-updating-backups", change = {
+            copy(legacyBackupUpgrade = BackupLibraryUpgradeProgress(completed = 2, total = 5))
+        }) {
+            compose.onNodeWithText("Updating").assertIsDisplayed()
+            check(compose.onAllNodesWithText("Checking backup 2 of 5").fetchSemanticsNodes().isEmpty())
         }
     }
 

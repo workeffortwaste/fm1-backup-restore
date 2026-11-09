@@ -411,6 +411,26 @@ class BackupStoreTest {
         }
     }
 
+    @Test fun miniFmImageDetectionAndTagSurviveRenameExportAndImport() {
+        val original = saveImage("Unnamed variant snapshot", "4_1_0_0", appIdentity = "MiniFM_015")
+        val classified = store.classifyImportedBackup(original)
+        assertEquals(DeviceFamily.MINI_FM, classified.taggedFamily)
+        assertEquals("MiniFM_015", classified.identityLine())
+        assertEquals("MiniFM", classified.taggedFamily.backupTagLabel)
+        val renamed = store.rename(classified.id, "My MiniFM snapshot")
+        assertEquals(classified.metadata, BackupStore(directory).list().single().metadata)
+        val output = ByteArrayOutputStream()
+        store.exportBackupZip(renamed, output)
+        val target = BackupStore(File(root, "mini-fm-import"))
+        val imported = target.importZip(output.toByteArray().inputStream()).single()
+        assertEquals(renamed.metadata, imported.metadata)
+        assertEquals(renamed.sha256, imported.sha256)
+        assertEquals(BackupCompatibility.COMPATIBLE, compatibility(imported.taggedFamily, DeviceFamily.FM1))
+        store.open(renamed.id).use { source ->
+            target.open(imported.id).use { copy -> assertArrayEquals(source.readBytes(), copy.readBytes()) }
+        }
+    }
+
     @Test fun pocketAmpEvidenceSurvivesRenameExportAndImportWithoutChangingImage() {
         val classification = classifyDeviceFamily("Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0")
         val original = saveImage(
@@ -482,6 +502,19 @@ class BackupStoreTest {
         val conflict = store.classifyImportedBackup(conflicted)
         assertEquals(DeviceFamily.UNKNOWN, conflict.taggedFamily)
         assertEquals(FamilyEvidenceOrigin.CONFLICT, conflict.metadata?.classification?.origin)
+    }
+
+    @Test fun legacyUpgradeUsesEmbeddedAppIdentity() {
+        val blackBox = saveImage(
+            "BlackBox legacy backup", "4_1_0_0", resetSetting = "PB01_00_0", appIdentity = "BlackBox_021",
+        )
+
+        assertTrue(blackBox.needsLegacyFamilyUpgrade)
+        val upgraded = store.upgradeLegacyFamilies(store.list()).single()
+
+        assertEquals(DeviceFamily.BLACKBOX, upgraded.taggedFamily)
+        assertEquals("BlackBox_021", upgraded.metadata?.classification?.rawMidiIdentity)
+        assertEquals(upgraded.metadata, BackupStore(directory).list().single().metadata)
     }
 
     @Test fun archivesPreserveCapturedEvidenceWithoutReclassifyingBeforeDeduplication() {

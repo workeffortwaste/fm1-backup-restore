@@ -522,8 +522,9 @@ class MainActivity : ComponentActivity() {
                     var hideDeviceTags by rememberSaveable {
                         mutableStateOf(setupPreferences.getBoolean("hide_device_tags", false))
                     }
+                    val legacyBackupUpgrade = model?.state?.legacyBackupUpgrade
                     BackHandler(enabled = showSettings) { showSettings = false }
-                    if (showBackupMilestonePrompt && resultSummary == null) {
+                    if (legacyBackupUpgrade == null && showBackupMilestonePrompt && resultSummary == null) {
                         AlertDialog(
                             onDismissRequest = {
                                 showBackupMilestonePrompt = false
@@ -565,7 +566,7 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                    resultSummary?.let { summary ->
+                    resultSummary?.takeIf { legacyBackupUpgrade == null }?.let { summary ->
                         AlertDialog(
                             onDismissRequest = { resultSummary = null },
                             title = { Text("Notification") },
@@ -582,7 +583,9 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     }
-                    if (showWelcome) {
+                    if (legacyBackupUpgrade != null) {
+                        UpdatingSplashScreen(progress = legacyBackupUpgrade.fraction)
+                    } else if (showWelcome) {
                         WelcomeScreen(darkTheme = darkTheme) {
                             setupPreferences.edit { putBoolean("complete", true) }
                             model?.refresh()

@@ -57,6 +57,11 @@ data class BackupEntry(
     val familyIsManuallySelected: Boolean get() = metadata?.manualFamilySelection != null
 }
 
+internal val BackupEntry.needsLegacyFamilyUpgrade: Boolean
+    get() = taggedFamily == DeviceFamily.UNKNOWN && metadata?.userFamily == null &&
+            metadata?.manualFamilySelection == null &&
+            metadata?.classification?.origin != FamilyEvidenceOrigin.CONFLICT
+
 /** Shows an explicit custom tag, otherwise the captured M-UPGRADE identity. */
 fun BackupEntry.identityLine(): String {
     val firmware = metadata?.userFirmwareLabel?.takeIf { it.isNotBlank() }
@@ -314,6 +319,15 @@ class BackupStore(private val directory: File) {
         val updated = metadata.copy(classification = readImageClassification(owned(entry.id), metadata))
         writeMetadata(entry.id, updated)
         return entry.copy(metadata = updated)
+    }
+
+    fun upgradeLegacyFamilies(
+        entries: List<BackupEntry>,
+        progress: (completed: Int, total: Int) -> Unit = { _, _ -> },
+    ): List<BackupEntry> = entries.mapIndexed { index, entry ->
+        val upgraded = classifyImportedBackup(entry)
+        progress(index + 1, entries.size)
+        upgraded
     }
 
     private fun archiveMetadata(entry: BackupEntry): BackupArchiveMetadata = BackupArchiveMetadata(

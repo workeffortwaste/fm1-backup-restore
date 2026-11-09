@@ -7,6 +7,11 @@ class DeviceFamilyTest {
     @Test
     fun mapsSupportedMidiPrefixesWithoutRequiringVersionSuffixes() {
         assertEquals(DeviceFamily.FM1, DeviceFamily.fromMidiIdentity("FM-1_015"))
+        assertEquals(DeviceFamily.MINI_FM, DeviceFamily.fromMidiIdentity("MiniFM_015"))
+        assertEquals(DeviceFamily.MINI_FM, DeviceFamily.fromMidiIdentity(" minifm "))
+        assertEquals(DeviceFamily.MINI_FM, DeviceFamily.fromMidiIdentity("MiniFM-new-version"))
+        assertEquals("MiniFM", DeviceFamily.MINI_FM.displayName)
+        assertEquals("MiniFM", DeviceFamily.MINI_FM.backupTagLabel)
         assertEquals(DeviceFamily.SMK37_PRO, DeviceFamily.fromMidiIdentity("SMK-37 Pro_016"))
         assertEquals(DeviceFamily.SMK37_ELITE, DeviceFamily.fromMidiIdentity("SMK-37 Elite_016"))
         assertEquals(DeviceFamily.STARRYKEY37_PLAY, DeviceFamily.fromMidiIdentity("STARRYKEY-37 PLAY_016"))
@@ -133,7 +138,7 @@ class DeviceFamilyTest {
     }
 
     @Test
-    fun compatibilityTreatsUnknownAsUnresolvedAndOnlyMatchesSameFamilies() {
+    fun compatibilityTreatsUnknownAsUnresolvedAndKeepsUnrelatedFamiliesSeparate() {
         assertEquals(BackupCompatibility.COMPATIBLE, compatibility(DeviceFamily.FM1, DeviceFamily.FM1))
         assertEquals(
             BackupCompatibility.INCOMPATIBLE,
@@ -145,6 +150,53 @@ class DeviceFamilyTest {
         )
         assertEquals(BackupCompatibility.UNKNOWN, compatibility(DeviceFamily.UNKNOWN, DeviceFamily.FM1))
         assertEquals(BackupCompatibility.UNKNOWN, compatibility(DeviceFamily.FM1, DeviceFamily.UNKNOWN))
+    }
+
+    @Test
+    fun fm1VariantsAreInterchangeableButNotCompatibleWithUnrelatedModels() {
+        val variants = listOf(DeviceFamily.FM1, DeviceFamily.MINI_FM)
+        for (variant in variants) {
+            for (family in DeviceFamily.entries) {
+                val expected = when {
+                    family == DeviceFamily.UNKNOWN -> BackupCompatibility.UNKNOWN
+                    family in variants -> BackupCompatibility.COMPATIBLE
+                    else -> BackupCompatibility.INCOMPATIBLE
+                }
+                assertEquals(expected, compatibility(variant, family))
+                assertEquals(expected, compatibility(family, variant))
+            }
+        }
+    }
+
+    @Test
+    fun miniFmIdentitySurvivesRecoveryAndImageClassification() {
+        for (jedec in listOf(0x856014L, 0xB36014L, 0x123456L, null)) {
+            for (reset in listOf("PB01_08_0", null)) {
+                val recovery = classifyDeviceFamily("MiniFM_015", "4_1_0_0", jedec, false, reset)
+                assertEquals(DeviceFamily.MINI_FM, recovery.family)
+                assertEquals(FamilyEvidenceConfidence.HIGH, recovery.confidence)
+                assertEquals("MiniFM_015", recovery.rawMidiIdentity)
+            }
+        }
+        val hint = classifyDeviceFamily("MiniFM_015", null, null, false)
+        assertEquals(DeviceFamily.MINI_FM, hint.family)
+        assertEquals(FamilyEvidenceOrigin.MIDI_HINT, hint.origin)
+        for (reset in listOf("PB01_08_0", null)) {
+            val imported = classifyImportedImage("MiniFM_015", "4_1_0_0", false, reset)
+            assertEquals(DeviceFamily.MINI_FM, imported.family)
+            assertEquals(FamilyEvidenceOrigin.IMPORTED_IMAGE_SCAN, imported.origin)
+        }
+        for (conflict in listOf(
+            classifyDeviceFamily("MiniFM_015", "2_1_0_0", 0x856014, false),
+            classifyDeviceFamily("MiniFM_015", "4_1_0_0", 0x856014, false, "PB01_00_0"),
+            classifyDeviceFamily("MiniFM_015", "4_1_0_0", 0x856014, true),
+            classifyImportedImage("MiniFM_015", "2_1_0_0", false),
+            classifyImportedImage("MiniFM_015", "4_1_0_0", false, "PB01_00_0"),
+            classifyImportedImage("MiniFM_015", "4_1_0_0", true),
+        )) {
+            assertEquals(DeviceFamily.UNKNOWN, conflict.family)
+            assertEquals(FamilyEvidenceOrigin.CONFLICT, conflict.origin)
+        }
     }
 
     @Test

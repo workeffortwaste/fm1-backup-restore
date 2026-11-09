@@ -1,12 +1,13 @@
 package com.workeffortwaste
 
-/** Supported compatibility families and their connected-device and backup-row labels. */
+/** Supported device models and their connected-device and backup-row labels. */
 enum class DeviceFamily(
     val displayName: String,
     val metadataName: String,
     val backupTagLabel: String = metadataName,
 ) {
     FM1("FM-1", "FM-1"),
+    MINI_FM("MiniFM", "MiniFM"),
     SMK37_PRO("SMK-37 Pro", "SMK-37 Pro", "SMK-P"),
     SMK37_ELITE("SMK-37 Elite", "SMK-37 Elite", "SMK-E"),
     STARRYKEY37_PLAY("Starrykey-37 PLAY", "Starrykey-37 PLAY", "SK37"),
@@ -15,6 +16,9 @@ enum class DeviceFamily(
     BLACKBOX("BlackBox", "BlackBox", "BB"),
     POCKET_AMP("Pocket AMP", "Pocket AMP", "PA"),
     UNKNOWN("Unknown", "Unknown");
+
+    val isFm1Family: Boolean
+        get() = this == FM1 || this == MINI_FM
 
     val isSmk37Family: Boolean
         get() = this == SMK37_PRO || this == SMK37_ELITE ||
@@ -25,6 +29,7 @@ enum class DeviceFamily(
             val value = identity?.trim() ?: return UNKNOWN
             return when {
                 value.startsWith("FM-1", ignoreCase = true) -> FM1
+                value.startsWith("MiniFM", ignoreCase = true) -> MINI_FM
                 value.startsWith("SMK-37 Pro", ignoreCase = true) -> SMK37_PRO
                 value.startsWith("SMK-37 Elite", ignoreCase = true) -> SMK37_ELITE
                 value.startsWith("STARRYKEY-37 PLAY", ignoreCase = true) -> STARRYKEY37_PLAY
@@ -66,6 +71,7 @@ enum class BackupCompatibility {
 fun compatibility(sourceFamily: DeviceFamily, targetFamily: DeviceFamily): BackupCompatibility = when {
     sourceFamily == DeviceFamily.UNKNOWN || targetFamily == DeviceFamily.UNKNOWN -> BackupCompatibility.UNKNOWN
     sourceFamily == targetFamily -> BackupCompatibility.COMPATIBLE
+    sourceFamily.isFm1Family && targetFamily.isFm1Family -> BackupCompatibility.COMPATIBLE
     else -> BackupCompatibility.INCOMPATIBLE
 }
 
@@ -94,10 +100,10 @@ private fun resetFamily(resetSetting: String?): DeviceFamily? = when (resetSetti
 
 /**
  * Documented RESET expectations: BlackBox shares Pocket AMP's record, keyboards share FM-1's,
- * so only these three families treat a different recognised RESET as a contradiction.
+ * so only FM-1 variants, BlackBox and Pocket AMP treat a different recognised RESET as a contradiction.
  */
 private fun expectedResetSetting(family: DeviceFamily): String? = when (family) {
-    DeviceFamily.FM1 -> FM1_RESET
+    DeviceFamily.FM1, DeviceFamily.MINI_FM -> FM1_RESET
     DeviceFamily.POCKET_AMP, DeviceFamily.BLACKBOX -> POCKET_AMP_RESET
     else -> null
 }
@@ -208,7 +214,7 @@ fun classifyDeviceFamily(
     }
     if (fm1RecoveryPair) {
         return result(
-            DeviceFamily.FM1,
+            midiFamily.takeIf { it.isFm1Family } ?: DeviceFamily.FM1,
             FamilyEvidenceOrigin.RECOVERY_BOOT_CONFIG,
             FamilyEvidenceConfidence.HIGH,
             "SPI 4_1_0_0, RESET PB01_08_0 and a known FM-1 JEDEC ID agree",
@@ -271,6 +277,7 @@ internal fun classifyImportedImage(
             spiSetting == "4_1_0_0" && resetSetting == POCKET_AMP_RESET
     val family = when {
         smkTrimMarkerPresent -> midiFamily.takeIf { it.isSmk37Family } ?: DeviceFamily.UNKNOWN
+        midiFamily.isFm1Family && spiSetting == "4_1_0_0" -> midiFamily
         midiFamily.isSmk37Family && spiSetting == "4_1_0_0" -> midiFamily
         midiFamily == DeviceFamily.BLACKBOX && spiSetting == "4_1_0_0" ->
             DeviceFamily.BLACKBOX

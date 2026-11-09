@@ -67,6 +67,26 @@ internal fun v15RecoveryBackupMetadata() = BackupMetadata(
     userFirmwareLabel = V15_RECOVERY_FIRMWARE_TAG,
 )
 
+internal fun shouldUpgradeLegacyBackupLibrary(
+    isDebugBuild: Boolean,
+    migrationDone: Boolean,
+    hasUnknownBackups: Boolean,
+): Boolean = !migrationDone || isDebugBuild && hasUnknownBackups
+
+data class BackupLibraryUpgradeProgress(
+    val completed: Int = 0,
+    val total: Int? = null,
+) {
+    val fraction: Float?
+        get() = total?.takeIf { it > 0 }?.let { (completed.toFloat() / it).coerceIn(0f, 1f) }
+    val message: String
+        get() = when (total) {
+            null -> "Checking saved backups for device type"
+            0 -> "No saved backups to update"
+            else -> "Checking backup ${completed.coerceAtMost(total)} of $total"
+        }
+}
+
 enum class FlashOperation(private val actionTitle: String, val label: String) {
     BACKUP("Backing up", "Backup"),
     RESTORE("Restoring", "Restore");
@@ -328,6 +348,7 @@ data class BackupState(
     val pinnedBackupIds: Set<String> = emptySet(),
     val libraryLoading: Boolean = true,
     val libraryError: String = "",
+    val legacyBackupUpgrade: BackupLibraryUpgradeProgress? = null,
     val progress: Float = 0f,
     val transfer: FlashOperation? = null,
     val progressKnown: Boolean = false,
@@ -550,8 +571,10 @@ class BackupModel(
     }
 
     init {
+        val legacyUpgradeDone = backupPreferences.getBoolean(LEGACY_BACKUP_UPGRADE_KEY, false)
         state = state.copy(
             pinnedBackupIds = backupPreferences.getStringSet(PINNED_BACKUP_IDS, emptySet()).orEmpty().toSet(),
+            legacyBackupUpgrade = if (legacyUpgradeDone) null else BackupLibraryUpgradeProgress(),
         )
         // The transport-specific callback overload requires API 33.
         @Suppress("DEPRECATION")
@@ -560,7 +583,30 @@ class BackupModel(
         mainHandler.postDelayed(keepAlive, KEEPALIVE_INTERVAL_MS)
         worker.execute {
             try {
-                val backups = backupStore.list()
+                val entries = backupStore.list()
+                val shouldUpgrade = shouldUpgradeLegacyBackupLibrary(
+                    BuildConfig.DEBUG,
+                    legacyUpgradeDone,
+                    entries.any { it.needsLegacyFamilyUpgrade },
+                )
+                val backups = if (shouldUpgrade) {
+                    mainHandler.post {
+                        state = state.copy(
+                            legacyBackupUpgrade = BackupLibraryUpgradeProgress(total = entries.size),
+                        )
+                    }
+                    backupStore.upgradeLegacyFamilies(entries) { completed, total ->
+                        mainHandler.post {
+                            state = state.copy(legacyBackupUpgrade = BackupLibraryUpgradeProgress(completed, total))
+                        }
+                    }.also {
+                        if (!legacyUpgradeDone && !backupPreferences.edit()
+                                .putBoolean(LEGACY_BACKUP_UPGRADE_KEY, true).commit()
+                        ) {
+                            Log.w("BackupModel", "Could not persist legacy backup upgrade marker")
+                        }
+                    }
+                } else entries
                 post {
                     val pinned = it.pinnedBackupIds intersect backups.mapTo(mutableSetOf()) { entry -> entry.id }
                     if (pinned != it.pinnedBackupIds) savePinnedBackups(pinned)
@@ -568,12 +614,14 @@ class BackupModel(
                         backups = backups,
                         pinnedBackupIds = pinned,
                         libraryLoading = false,
+                        legacyBackupUpgrade = null,
                     )
                 }
             } catch (failure: Exception) {
                 post {
                     it.copy(
                         libraryLoading = false,
+                        legacyBackupUpgrade = null,
                         libraryError = "Could not load backups: ${failure.message}",
                     )
                 }
@@ -2261,6 +2309,7 @@ class BackupModel(
 
     private companion object {
         const val PINNED_BACKUP_IDS = "pinned_backup_ids"
+        const val LEGACY_BACKUP_UPGRADE_KEY = "legacy_backup_family_upgrade_v1"
         const val KEEPALIVE_INTERVAL_MS = 1000L
         const val DISCOVERY_TIMEOUT_MS = 3000L
     }
