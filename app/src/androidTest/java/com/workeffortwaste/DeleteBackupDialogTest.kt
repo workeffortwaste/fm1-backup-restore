@@ -60,8 +60,8 @@ class DeleteBackupDialogTest {
         checkDialog("Original firmware", "My factory backup", delete = false)
     }
 
-    @Test fun unnamedBackupShowsLibraryFallbackAndDeletesOnlyAfterConfirmation() {
-        checkDialog(null, "Firmware unknown", delete = true)
+    @Test fun unnamedBackupOmitsFirmwareLabelAndDeletesOnlyAfterConfirmation() {
+        checkDialog(null, null, delete = true)
     }
 
     @Test fun emptyLibraryOffersSnapshotAndOpensExistingModal() {
@@ -71,10 +71,10 @@ class DeleteBackupDialogTest {
                 compose.onAllNodes(hasText("Already started flashing custom firmware?"))
                     .fetchSemanticsNodes().isNotEmpty()
             }
-            compose.onNodeWithText("Generate a stock v15 snapshot even if you didn't save a backup first.")
+            compose.onNodeWithText("Generate a stock v15 snapshot for your FM-1 even if you didn't save a backup first.")
                 .assertIsDisplayed()
-            compose.onNodeWithText("Create v15 recovery snapshot").performClick()
-            compose.onNode(hasText("Create v15 recovery snapshot") and hasAnyAncestor(isDialog()))
+            compose.onNodeWithText("Create FM-1 v15 recovery snapshot").performClick()
+            compose.onNode(hasText("Create FM-1 v15 recovery snapshot") and hasAnyAncestor(isDialog()))
                 .assertIsDisplayed()
             compose.onNodeWithText("Download and build").assertIsDisplayed()
             compose.onNodeWithText("Cancel").performClick()
@@ -125,7 +125,28 @@ class DeleteBackupDialogTest {
                 compose.onNodeWithText("Diagnostics").performClick()
                 compose.onNodeWithText("Verify bootloader").assertIsNotEnabled()
                 compose.runOnIdle {
-                    state.value = state.value.copy(ready = true, deviceMode = DeviceMode.DOWNLOAD)
+                    state.value = state.value.copy(
+                        ready = true,
+                        deviceMode = DeviceMode.DOWNLOAD,
+                        firmwareIdentity = "PocketX_924",
+                        deviceClassification = classifyDeviceFamily("PocketX_924", "2_1_0_0", 0x856014, false),
+                    )
+                }
+                compose.onNodeWithText("Verify bootloader").assertIsNotEnabled()
+                compose.runOnIdle {
+                    state.value = state.value.copy(
+                        firmwareIdentity = "Pocket AMP_105",
+                        deviceClassification = classifyDeviceFamily(
+                            "Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0",
+                        ),
+                    )
+                }
+                compose.onNodeWithText("Verify bootloader").assertIsNotEnabled()
+                compose.runOnIdle {
+                    state.value = state.value.copy(
+                        firmwareIdentity = "FM-1_015",
+                        deviceClassification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
+                    )
                 }
                 compose.onNodeWithText("Verify bootloader").performClick()
                 compose.onNodeWithText("Diagnostics").assertDoesNotExist()
@@ -149,12 +170,102 @@ class DeleteBackupDialogTest {
         }
     }
 
+    @Test fun nonFm1ConnectionHidesRecoverySnapshotOptions() {
+        ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+            var model: BackupModel? = null
+            compose.waitUntil(timeoutMillis = 10000) {
+                scenario.onActivity { activity ->
+                    model = ViewModelProvider(activity)[TransferConnection::class.java].model
+                }
+                model != null
+            }
+            val target = requireNotNull(model)
+            val state = backupState(target)
+            val original = target.state
+            try {
+                compose.runOnIdle {
+                    state.value = original.copy(
+                        deviceMode = DeviceMode.DOWNLOAD,
+                        ready = true,
+                        firmwareIdentity = "PocketX_924",
+                        deviceClassification = classifyDeviceFamily(
+                            "PocketX_924", "2_1_0_0", 0x856014, false,
+                        ),
+                        backups = emptyList(),
+                        libraryLoading = false,
+                        libraryError = "",
+                    )
+                }
+                compose.onNodeWithText("Already started flashing custom firmware?").assertDoesNotExist()
+                compose.onNodeWithContentDescription("More options").performClick()
+                compose.onNodeWithText("Create FM-1 recovery snapshot").assertDoesNotExist()
+            } finally {
+                compose.runOnIdle { state.value = original }
+            }
+        }
+    }
+
     private fun backupState(model: BackupModel): MutableState<BackupState> {
         val delegate = BackupModel::class.java.getDeclaredField("state\$delegate")
             .apply { isAccessible = true }
             .get(model)
         @Suppress("UNCHECKED_CAST")
         return delegate as MutableState<BackupState>
+    }
+
+    @Test fun pocketAmpBackupRowShowsPaTagAndKeepsManagementActions() {
+        val originalHideTags = preferences.getBoolean("hide_device_tags", false)
+        preferences.edit(commit = true) { putBoolean("hide_device_tags", false) }
+        try {
+            ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use { scenario ->
+                var model: BackupModel? = null
+                compose.waitUntil(timeoutMillis = 10000) {
+                    scenario.onActivity { activity ->
+                        model = ViewModelProvider(activity)[TransferConnection::class.java].model
+                    }
+                    model != null
+                }
+                val target = requireNotNull(model)
+                val state = backupState(target)
+                val original = target.state
+                val hash = "a".repeat(64)
+                val entry = BackupEntry(
+                    id = "fm1-1730000000000-1-$hash.bin",
+                    createdAt = 1730000000000L,
+                    sha256 = hash,
+                    firmwareIdentity = "Pocket snapshot",
+                    metadata = BackupMetadata(
+                        classification = classifyDeviceFamily(
+                            "Pocket AMP_105", "4_1_0_0", 0x856014, false, "PB01_00_0",
+                        ),
+                    ),
+                )
+                try {
+                    compose.runOnIdle {
+                        state.value = original.copy(
+                            ready = true,
+                            deviceMode = DeviceMode.DOWNLOAD,
+                            firmwareIdentity = "Pocket AMP_105",
+                            deviceClassification = requireNotNull(entry.metadata).classification,
+                            backups = listOf(entry),
+                            pinnedBackupIds = emptySet(),
+                            libraryLoading = false,
+                            libraryError = "",
+                        )
+                    }
+                    compose.onNodeWithText("PA").assertIsDisplayed()
+                    compose.onNodeWithText("Pocket snapshot").assertIsDisplayed()
+                    compose.onNodeWithContentDescription("Actions for Pocket AMP", substring = true).performClick()
+                    compose.onNodeWithText("Tag", useUnmergedTree = true).assertIsDisplayed()
+                    compose.onNodeWithText("Export", useUnmergedTree = true).assertIsDisplayed()
+                    compose.onNodeWithText("Already started flashing custom firmware?").assertDoesNotExist()
+                } finally {
+                    compose.runOnIdle { state.value = original }
+                }
+            }
+        } finally {
+            preferences.edit(commit = true) { putBoolean("hide_device_tags", originalHideTags) }
+        }
     }
 
     @Test fun pinningOnlyBackupHidesBackupsSectionAndUnpinningShowsItAgain() {
@@ -194,24 +305,36 @@ class DeleteBackupDialogTest {
         return entry
     }
 
-    private fun checkDialog(initialName: String?, displayedName: String, delete: Boolean) {
+    private fun checkDialog(initialName: String?, displayedName: String?, delete: Boolean) {
         val store = BackupStore(File(context.filesDir, "backups"))
         var entry = createBackup(initialName)
         if (initialName != null) {
-            entry = store.rename(entry.id, displayedName)
+            entry = store.rename(entry.id, requireNotNull(displayedName))
             backup = File(context.filesDir, "backups/${entry.id}")
         }
         val date = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM)
             .format(Date(entry.createdAt))
         ActivityScenario.launch<MainActivity>(Intent(context, MainActivity::class.java)).use {
             compose.waitUntil(timeoutMillis = 10000) {
-                compose.onAllNodes(hasText(displayedName))
-                    .fetchSemanticsNodes().isNotEmpty()
+                if (displayedName != null) {
+                    compose.onAllNodes(hasText(displayedName)).fetchSemanticsNodes().isNotEmpty()
+                } else {
+                    compose.onAllNodes(hasText(date, substring = true)).fetchSemanticsNodes().isNotEmpty()
+                }
             }
-            compose.onNodeWithText(displayedName).performClick()
+            if (displayedName != null) {
+                compose.onNodeWithText(displayedName).performClick()
+            } else {
+                compose.onNode(hasText(date, substring = true)).performClick()
+                compose.onNodeWithText("Firmware unknown").assertDoesNotExist()
+            }
             compose.onNodeWithText("Delete", useUnmergedTree = true).performClick()
             compose.onNodeWithText("Delete this backup?").assertIsDisplayed()
-            compose.onNode(hasText(displayedName) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+            if (displayedName != null) {
+                compose.onNode(hasText(displayedName) and hasAnyAncestor(isDialog())).assertIsDisplayed()
+            } else {
+                compose.onNodeWithText("Firmware unknown").assertDoesNotExist()
+            }
             compose.onNode(hasText(date) and hasAnyAncestor(isDialog())).assertIsDisplayed()
             compose.onNodeWithText(
                 "This permanently deletes the private copy from this app. Exported copies are not deleted.",

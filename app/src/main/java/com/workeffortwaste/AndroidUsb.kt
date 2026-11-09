@@ -38,7 +38,7 @@ object AndroidUsb {
         val usbInterface = massStorageInterfaces(device).singleOrNull()
             ?: throw ProtocolException("Expected exactly one Mass Storage BOT interface")
         val (input, output) = bulkEndpoints(usbInterface) ?: throw ProtocolException("Missing bulk endpoints")
-        val connection = manager.openDevice(device) ?: throw ProtocolException("Could not open the FM-1 USB connection")
+        val connection = manager.openDevice(device) ?: throw ProtocolException("Could not open the connected USB device")
         if (!connection.claimInterface(usbInterface, true)) {
             connection.close()
             throw ProtocolException("Could not claim USB interface; disconnect other USB apps")

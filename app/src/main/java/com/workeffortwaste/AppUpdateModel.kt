@@ -34,6 +34,7 @@ internal data class AppRelease(
 )
 
 private const val MAX_APK_BYTES = 100 * 1024 * 1024L
+private const val MAX_RELEASE_METADATA_CHARS = 1024 * 1024
 
 internal class UpdateNotReadyException : IllegalArgumentException(
     "A newer release is available, but its APK hasn't been uploaded yet. Try again later.",
@@ -209,7 +210,7 @@ internal class AppUpdateModel(application: Application) : AndroidViewModel(appli
             requireSuccess(connection)
             val json = connection.inputStream.bufferedReader().use { reader ->
                 // Release notes and metadata should never require an unbounded allocation.
-                val text = reader.readTextLimited(1024 * 1024)
+                val text = reader.readReleaseMetadata()
                 JSONObject(text)
             }
             return parseAppRelease(json, installed.versionName.orEmpty())
@@ -319,14 +320,14 @@ internal class AppUpdateModel(application: Application) : AndroidViewModel(appli
         }
     }
 
-    private fun java.io.Reader.readTextLimited(limit: Int): String {
+    private fun java.io.Reader.readReleaseMetadata(): String {
         val buffer = CharArray(4096)
         val result = StringBuilder()
         while (true) {
             val count = read(buffer)
             if (count == -1) return result.toString()
-            require(result.length + count <= limit) { "Update metadata is too large." }
-            result.append(buffer, 0, count)
+            require(result.length + count <= MAX_RELEASE_METADATA_CHARS) { "Update metadata is too large." }
+            result.appendRange(buffer, 0, count)
         }
     }
 

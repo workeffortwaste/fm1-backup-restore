@@ -220,6 +220,156 @@ class ProtocolTest {
         assertFalse(FlashInfo(4, 0xef4018).isNor)
     }
 
+    private fun configBlob(vararg spiValues: String): ByteArray = ByteArrayOutputStream().apply {
+        write(ByteArray(34))
+        for (value in spiValues) {
+            val bytes = value.toByteArray(Charsets.US_ASCII)
+            write(bytes.size)
+            write(byteArrayOf(0x53, 0x50, 0x49, 0))
+            write(bytes)
+        }
+    }.toByteArray()
+
+    private fun bootAreaWithConfig(
+        config: ByteArray,
+        configAddress: Int = 0x100,
+        corruptConfigData: Boolean = false,
+        corruptConfigEntry: Boolean = false,
+    ): ByteArray {
+        val area = ByteArray(FlashRestore.PROTECTED_SIZE) { 0xff.toByte() }
+        val header = ByteArray(32)
+        writeLittleEndian16(header, 0, Fm1Protocol.crc16(header.copyOfRange(2, header.size)))
+        encryptBootRecord(header).copyInto(area)
+
+        fun entry(name: String, address: Int, length: Int, dataCrc: Int, attribute: Int): ByteArray {
+            val decoded = ByteArray(32)
+            writeLittleEndian16(decoded, 2, dataCrc)
+            writeLittleEndian32(decoded, 4, address)
+            writeLittleEndian32(decoded, 8, length)
+            decoded[12] = attribute.toByte()
+            name.toByteArray(Charsets.US_ASCII).copyInto(decoded, 16)
+            writeLittleEndian16(decoded, 0, Fm1Protocol.crc16(decoded.copyOfRange(2, decoded.size)))
+            return encryptBootRecord(decoded)
+        }
+
+        entry("uboot.boot", 0xa0, 16, 0, 0).copyInto(area, 0x20)
+        entry("isd_config.ini", configAddress, config.size, Fm1Protocol.crc16(config), 2)
+            .copyInto(area, 0x40)
+        entry("app_dir_head", FlashRestore.PROTECTED_SIZE, 0, 0, 0x81).copyInto(area, 0x60)
+        entry("key_mac", 0xff000, 0x1000, 0, 0x12).copyInto(area, 0x80)
+        config.copyInto(area, configAddress)
+        if (corruptConfigData) area[configAddress + config.lastIndex] =
+            (area[configAddress + config.lastIndex].toInt() xor 1).toByte()
+        if (corruptConfigEntry) area[0x40] = (area[0x40].toInt() xor 1).toByte()
+        return area
+    }
+
+    private fun encryptBootRecord(bytes: ByteArray): ByteArray {
+        var key = 0xffff
+        return ByteArray(bytes.size) { index ->
+            val value = bytes[index].toInt() xor (key and 0xff)
+            key = ((key shl 1) xor (if (key and 0x8000 != 0) 0x1021 else 0)) and 0xffff
+            value.toByte()
+        }
+    }
+
+    private fun writeLittleEndian16(bytes: ByteArray, offset: Int, value: Int) {
+        bytes[offset] = value.toByte()
+        bytes[offset + 1] = (value ushr 8).toByte()
+    }
+
+    private fun writeLittleEndian32(bytes: ByteArray, offset: Int, value: Int) {
+        repeat(4) { index -> bytes[offset + index] = (value ushr (index * 8)).toByte() }
+    }
+
+    @Test
+    fun bootSpiParserReadsBinaryConfigAndRejectsBadOrAmbiguousRecords() {
+        assertEquals(
+            "4_1_0_0",
+            BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob("4_1_0_0"), configAddress = 0x38d0)),
+        )
+        assertEquals(
+            "2_1_0_0",
+            BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob("2_1_0_0"), configAddress = 0x3938)),
+        )
+        assertNull(BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob())))
+        assertNull(BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob("invalid"))))
+        assertNull(BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob("4_1_0_0", "2_1_0_0"))))
+        assertNull(BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob("4_1_0_0"), corruptConfigData = true)))
+        assertNull(BootSpiConfig.extractSetting(bootAreaWithConfig(configBlob("4_1_0_0"), corruptConfigEntry = true)))
+    }
+
+    @Test
+    fun bootSpiReadUsesOnlySixtyFourBoundedFlashReads() {
+        val bootArea = bootAreaWithConfig(configBlob("4_1_0_0"), configAddress = 0x38d0)
+        val scsi = RecordingScsi().apply {
+            reply = { command ->
+                val address = ByteBuffer.wrap(command.cdb, 2, 4).int
+                bootArea.copyOfRange(address, address + command.inputLength)
+            }
+        }
+        assertEquals("4_1_0_0", Fm1Protocol(scsi).readBootSpiSetting())
+        assertEquals(FlashRestore.PROTECTED_SIZE / 256, scsi.commands.size)
+        assertEquals(256, scsi.commands.first().inputLength)
+        assertEquals(256, scsi.commands.last().inputLength)
+        assertArrayEquals(
+            byteArrayOf(0xfd.toByte(), 5, 0, 0, 0x3f, 0, 1, 0) + ByteArray(8) { -1 },
+            scsi.commands.last().cdb,
+        )
+    }
+
+    @Test
+    fun bootConfigReadsResetWithSpiAndValidatesAllRecords() {
+        fun config(vararg resets: String): ByteArray = configBlob("4_1_0_0") +
+            ByteArrayOutputStream().apply {
+                for (reset in resets) {
+                    write(reset.length)
+                    write("RESET".toByteArray(Charsets.US_ASCII))
+                    write(0)
+                    write(reset.toByteArray(Charsets.US_ASCII))
+                }
+            }.toByteArray()
+
+        for (reset in listOf("PB01_08_0", "PB01_00_0")) {
+            for (address in listOf(0x38d0, 0x3938)) {
+                val area = bootAreaWithConfig(config(reset), configAddress = address)
+                assertEquals(BootDeviceConfig("4_1_0_0", reset), BootSpiConfig.extract(area))
+                val scsi = RecordingScsi().apply {
+                    reply = { command ->
+                        val offset = ByteBuffer.wrap(command.cdb, 2, 4).int
+                        area.copyOfRange(offset, offset + command.inputLength)
+                    }
+                }
+                assertEquals(BootDeviceConfig("4_1_0_0", reset), Fm1Protocol(scsi).readBootDeviceConfig())
+                assertEquals(64, scsi.commands.size)
+            }
+        }
+        assertEquals(BootDeviceConfig("4_1_0_0"), BootSpiConfig.extract(bootAreaWithConfig(config())))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0", "PB01_08_0"))))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0", "PB01_00_0"))))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("bad\u0001"))))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0"), corruptConfigData = true)))
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(config("PB01_00_0"), corruptConfigEntry = true)))
+        val truncated = config("PB01_00_0").dropLast(1).toByteArray()
+        assertNull(BootSpiConfig.extract(bootAreaWithConfig(truncated)))
+    }
+
+    @Test
+    fun smkMarkerReadUsesOnlyTheDocumentedEightByteAddress() {
+        val marker = byteArrayOf(0x74, 0x72, 0x69, 0x6d, 0x64, 0x61, 0x74, 0)
+        val scsi = RecordingScsi().apply { reply = { marker.copyOf() } }
+        assertTrue(Fm1Protocol(scsi).hasSmkTrimMarker())
+        val command = scsi.commands.single()
+        assertEquals(8, command.inputLength)
+        assertArrayEquals(
+            byteArrayOf(0xfd.toByte(), 5, 0, 0x0c, 0x12, 0x24, 0, 8) + ByteArray(8) { -1 },
+            command.cdb,
+        )
+
+        val nonMarker = RecordingScsi().apply { reply = { ByteArray(8) } }
+        assertFalse(Fm1Protocol(nonMarker).hasSmkTrimMarker())
+    }
+
     /** Correct transfer length alone is not evidence that the requested command succeeded. */
     @Test
     fun rejectsWrongJieLiResponseEcho() {
@@ -398,7 +548,7 @@ class ProtocolTest {
             MessageDigest.getInstance("SHA-256").digest(data)
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }, hash
         )
-        assertEquals(2, phases.distinct().size)
+        assertEquals(listOf("Reading flash", "Verifying: reading flash again"), phases.distinct())
     }
 
     /** Device inconsistency and destination failures both prevent a success hash from being returned. */

@@ -22,14 +22,14 @@ class FlashBackup(private val read: (Long, Int) -> ByteArray) {
     ): String {
         require(size in 1..0x100000000L)
         val backupHash = readAndHash(size, output, checkCancelled) { bytes ->
-            progress("Reading FM-1 flash", bytes)
+            progress("Reading flash", bytes)
         }
         val verificationHash = readAndHash(size, output = null, checkCancelled) { bytes ->
-            progress("Verifying: reading FM-1 flash again", bytes)
+            progress("Verifying: reading flash again", bytes)
         }
         checkCancelled()
         if (!MessageDigest.isEqual(backupHash, verificationHash)) {
-                throw ProtocolException("Verification failed: two complete FM-1 reads differ")
+                throw ProtocolException("Verification failed: two complete flash reads differ")
         }
         return backupHash.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }

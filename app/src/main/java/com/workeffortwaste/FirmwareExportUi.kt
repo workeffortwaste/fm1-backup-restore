@@ -9,6 +9,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -28,8 +29,8 @@ internal fun FirmwareExportDialog(
 ) {
     if (!state.showDialog) return
     AlertDialog(
-        onDismissRequest = { if (!state.working) onDismiss() },
-        title = { Text("Export all backups") },
+        onDismissRequest = { if (!state.working && (state.completed || exportEnabled)) onDismiss() },
+        title = { Text(if (state.singleBackup) "Export backup" else "Export all backups") },
         text = {
             Column(
                 modifier = Modifier.sizeIn(maxHeight = 360.dp).verticalScroll(rememberScrollState()),
@@ -68,9 +69,88 @@ internal fun FirmwareExportDialog(
         dismissButton = {
             if (!state.completed) {
                 TextButton(
-                    enabled = !state.cancelling,
+                    enabled = !state.cancelling && (state.working || exportEnabled),
                     modifier = Modifier.heightIn(min = 48.dp),
                     onClick = if (state.working) onCancel else onDismiss,
+                ) { Text("Cancel") }
+            }
+        },
+    )
+}
+
+@Composable
+internal fun FirmwareImportDialog(
+    state: FirmwareImportState,
+    selected: SelectedImport?,
+    name: String,
+    onNameChange: (String) -> Unit,
+    pickerOpen: Boolean,
+    onChoose: () -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    if (!state.showDialog) return
+    val valid = name.isNotBlank() && name.length <= BackupStore.MAX_NAME_LENGTH &&
+        name.all { it.code in 32..126 }
+    AlertDialog(
+        onDismissRequest = { if (!state.working && !pickerOpen) onCancel() },
+        title = { Text("Import backups") },
+        text = {
+            Column(
+                modifier = Modifier.sizeIn(maxHeight = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (state.message.isNotEmpty()) {
+                    Text(
+                        text = if (state.cancelling) "Cancelling import" else state.message,
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
+                if (state.working) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else if (!state.completed && selected != null) {
+                    Text(selected.sourceName)
+                    Text("SHA-256: ${selected.sha256}")
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = onNameChange,
+                        label = { Text("File name") },
+                        singleLine = true,
+                        isError = !valid,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else if (!state.completed) {
+                    Text("No file selected")
+                }
+            }
+        },
+        confirmButton = {
+            if (!state.working) {
+                TextButton(
+                    enabled = !pickerOpen && (state.completed || selected == null || valid),
+                    onClick = when {
+                        state.completed -> onCancel
+                        selected != null -> onSave
+                        else -> onChoose
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(
+                        when {
+                            state.completed -> "Close"
+                            selected != null -> "Save"
+                            else -> "Choose file"
+                        },
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            if (!state.completed) {
+                TextButton(
+                    onClick = onCancel,
+                    enabled = !state.cancelling && !pickerOpen,
+                    modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text("Cancel") }
             }
         },

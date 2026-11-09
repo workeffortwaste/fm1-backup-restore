@@ -31,18 +31,18 @@ class ProgressReporterTest {
         val updates = mutableListOf<Pair<StatusMessage, Float>>()
         val backupRead = statusMessage("Backing up FM-1", "Reading flash")
         val reporter = ProgressReporter({ now }, listOf(
-            ProgressPhase("Reading FM-1 flash", 1000, backupRead),
+            ProgressPhase("Reading flash", 1000, backupRead),
         )) { status, fraction -> updates += status to fraction }
 
-        reporter.report("Reading FM-1 flash", 0, 1000)
+        reporter.report("Reading flash", 0, 1000)
         now = 99
-        reporter.report("Reading FM-1 flash", 250, 1000)
+        reporter.report("Reading flash", 250, 1000)
         now = 100
-        reporter.report("Reading FM-1 flash", 500, 1000)
+        reporter.report("Reading flash", 500, 1000)
         now = 199
-        reporter.report("Reading FM-1 flash", 750, 1000)
+        reporter.report("Reading flash", 750, 1000)
         now = 200
-        reporter.report("Reading FM-1 flash", 800, 1000)
+        reporter.report("Reading flash", 800, 1000)
 
         assertEquals(listOf(
             backupRead to 0f,

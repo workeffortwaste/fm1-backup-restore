@@ -4,7 +4,7 @@ internal const val UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
 
 /** Rechecks after a day, on first launch, or if the device clock moved backwards. */
 internal fun updateCheckDue(now: Long, lastCheck: Long): Boolean =
-    lastCheck <= 0 || lastCheck > now || now - lastCheck >= UPDATE_CHECK_INTERVAL_MS
+    lastCheck !in 1..now || now - lastCheck >= UPDATE_CHECK_INTERVAL_MS
 
 /**
  * Explains why this install can never receive a release update, or null if checks are allowed.

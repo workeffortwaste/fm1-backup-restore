@@ -4,9 +4,9 @@
 
 # FM-1 Backup & Restore *for Android*
 
-_Back up and restore your M-VAVE FM-1 from an Android phone._
+_Back up and restore your M-VAVE FM-1 ([and now other devices](#supported-device-families)) from an Android phone._
 
-Back up your M-VAVE FM-1 and restore it whenever you need to from your Android phone. Each backup is a complete flash snapshot you can return to at any point; the **_firmware_**, **_settings_**, **_projects_**, **_songs_**, and other data, stored exactly as they were when you saved it. Restore puts that data back byte for byte, leaving the protected bootloader completely untouched.
+Back up your M-VAVE FM-1 ([and now other devices](#supported-device-families)) and restore it whenever you need to from your Android phone. Each backup is a complete flash snapshot you can return to at any point; the **_firmware_**, **_settings_**, **_projects_**, **_songs_**, and other data, stored exactly as they were when you saved it. Restore puts that data back byte for byte, leaving the protected bootloader completely untouched.
 
 > **Support this project** <br/> Help support the work that goes into creating and maintaining my projects and sponsor me via [GitHub Sponsors](https://github.com/sponsors/workeffortwaste/).
 
@@ -19,8 +19,8 @@ The latest version can be downloaded from the link below or from the releases se
 ## Screenshots
 
 <p>
-  <img width="300" alt="custom-black-connected" src="https://github.com/user-attachments/assets/60abc3fd-457b-4433-8a21-86209b7dad9b" alt="Backup library in the Black theme"/>
-  <img width="300" alt="custom-black-backup-75" src="https://github.com/user-attachments/assets/0e575c8f-7afc-4d1a-bbfb-070ff5fa763f" alt="Backup progress in the Black theme"/>
+  <img width="300" alt="custom-black-connected" src="https://github.com/user-attachments/assets/188c1ddd-ef53-4da4-a872-152f37d54b02" alt="Backup library in the Black theme"/>
+  <img width="300" alt="custom-black-backup-75" src="https://github.com/user-attachments/assets/b0d8015a-6e8b-4590-aeb8-e3764a07eb92" alt="Backup progress in the Black theme"/>
 </p>
 
 ## Use cases
@@ -51,6 +51,22 @@ Flashing or restoring your device carries an inherent risk of data loss or leavi
 
 This tool is provided as-is. Use it at your own risk, and I accept no responsibility for damage, data loss or other problems caused by its use.
 
+## Supported device families
+
+Whilst the README is FM-1 focused the app supports the following devices:
+
+| Device | Tag |
+| --- | --- |
+| FM-1 | FM-1 |
+| MiniFM | MiniFM |
+| SMK-37 Pro | SMK-P |
+| SMK-37 Elite | SMK-E |
+| Starrykey-37 PLAY | SK37 |
+| MKE-P37 | MKE37 |
+| Pocket X | PX |
+| BlackBox | BB |
+| Pocket AMP | PA |
+
 ## Using the app
 
 > **Requirements** <br/>You'll need Android 8 or later and a data-capable USB OTG cable (OTG?! If you've got a USBC cable that works with data, and a phone with a USBC port, you're good).
@@ -65,11 +81,13 @@ Connect your FM-1 and tap **Connect to FM-1**. The app will restart it into reco
 
 The app reads the full 1 MiB flash twice and checks the saved copy before adding it to your backup library. You can rename backups, pin the ones you want to keep close, and export a copy through the menu.
 
+Export saves a ZIP containing the backup BIN and a JSON file with its SHA-256, date, identity, and device metadata/tags. **Export all backups** exports everything as invidivual ZIPs packaged inside a single ZIP archive.
+
 **Keep an exported copy somewhere safe.** Backups stored only inside the app data for convenience and are lost if you uninstall it or clear its data. If you want to keep a copy somewhere else export it via the settings in the app.
 
 ### Restoring
 
-Choose **Restore** from a saved backup's menu, or **Import from file** in the top menu to add a verified `.bin` backup to your library. The imported backup is not restored automatically.
+Choose **Restore** from a saved backup's menu, or **Import from file** in the top menu to add an exported `.zip` backup (or loose .bin) to your library. The imported backup is not restored automatically.
 
 Read the confirmation carefully: restoring replaces the FM-1's firmware, settings and patches (everything) outside the protected bootloader region.
 
@@ -168,6 +186,10 @@ If you find the app useful, please consider supporting the work that goes into c
 Chris Johnson - [defaced.dev](https://defaced.dev) - [@defaced.dev](https://bsky.app/profile/defaced.dev) (Bluesky)
 
 What would you like to see next? More themes? Firmware flashing? Hassle me on social media or [open an issue](https://github.com/workeffortwaste/fm1-backup-restore/issues).
+
+## Thank You
+
+Thank you to everyone who has donated, and a special thanks to Robert Thomas for the additional device testing.
 
 ## License
 

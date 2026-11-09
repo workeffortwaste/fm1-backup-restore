@@ -82,6 +82,7 @@ class TransferService : Service() {
                 model.bootloaderVerificationState.recovery == null
             ) {
                 val state = model.state
+                val deviceName = state.connectedDeviceDisplayName
                 val summary = state.status.asNotificationText() +
                         if (state.hash.isNotEmpty()) "\n${state.hashLabel}: ${state.hash}" else ""
                 val reopen = PendingIntent.getActivity(
@@ -95,7 +96,7 @@ class TransferService : Service() {
                     RESULT_NOTIFICATION_ID,
                     Notification.Builder(this, CHANNEL)
                         .setSmallIcon(R.drawable.ic_launcher_wave)
-                        .setContentTitle("FM-1 ${name.label} result")
+                        .setContentTitle("$deviceName ${name.label} result")
                         .setContentText(state.status.heading.withTerminalPeriod())
                         .setStyle(Notification.BigTextStyle().bigText(summary))
                         .setContentIntent(reopen)

@@ -8,12 +8,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
-/** Locks down the FM1-only MIDI policy without depending on Android device discovery. */
+/** Locks down supported-device MIDI policy without depending on Android device discovery. */
 class Fm1BootloaderMidiTest {
     @Test
     fun recognizesNormalModeUsbIdOnlyWithMidiInterface() {
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xc755, true))
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0001, true))
+        assertTrue(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7756, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7756, false))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7757, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0x7756, true))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0001, false))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0003, true))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xc755, false))
