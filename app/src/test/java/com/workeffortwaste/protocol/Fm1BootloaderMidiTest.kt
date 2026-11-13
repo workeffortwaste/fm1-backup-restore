@@ -15,6 +15,8 @@ class Fm1BootloaderMidiTest {
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xc755, true))
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x1209, 0x0001, true))
         assertTrue(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7756, true))
+        assertTrue(Fm1BootloaderMidi.matchesUsb(0x4d4a, 0x4155, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4d4a, 0x4155, false))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7756, false))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x3654, 0x7757, true))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0x7756, true))
@@ -23,7 +25,6 @@ class Fm1BootloaderMidiTest {
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xc755, false))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0x0001, true))
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x1209, 0xc755, true))
-        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4d4a, 0x4155, true))
     }
 
     /** Hardware expects these six bytes exactly; no channel framing or trailing message is allowed. */
