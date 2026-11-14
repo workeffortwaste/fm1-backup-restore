@@ -194,3 +194,5 @@ Thank you to everyone who has donated, and a special thanks to Robert Thomas for
 ## License
 
 This project is licensed under the [MIT License](./LICENSE).
+
+Related: try FM-1 firmwares in the browser with the free community [FM-1 Emulator](https://fm1-emulator.atst.tools/).
