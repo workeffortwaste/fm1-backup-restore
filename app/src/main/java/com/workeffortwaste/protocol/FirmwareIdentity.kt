@@ -14,9 +14,28 @@ object FirmwareIdentity {
     ): MidiIdentityEvidence {
         // Independent family evidence first: it also gates the slower, firmware-specific label probes.
         val mUpgradeIdentity = read(request(), ::parse)
-        val editorLabel = (if (probeBuildCode(mUpgradeIdentity)) read(buildCodeRequest(), ::parseBuildCode) else null)
-            ?: if (includeLegacyEditor) read(editorRequest(), ::parseEditor) else null
+        val editorLabel = read(shrubRequest(), ::parseShrub)
+            ?: (if (probeBuildCode(mUpgradeIdentity)) read(buildCodeRequest(), ::parseBuildCode) else null)
+            ?: (if (includeLegacyEditor) read(editorRequest(), ::parseEditor) else null)
         return MidiIdentityEvidence(mUpgradeIdentity, editorLabel)
+    }
+
+    fun shrubRequest(): ByteArray =
+        byteArrayOf(0xf0.toByte(), 0x22, 0x24, 0x35, 0x20, 1, 0xf7.toByte())
+
+    /** SHRUB HELLO echoes sequence 1 and ends its capability fields with a zero-terminated version. */
+    fun parseShrub(message: ByteArray): String? {
+        if (message.size !in 25..600 ||
+            !message.startsWith(0xf0, 0x22, 0x24, 0x35, 0x30, 1, 0) ||
+            !message.isSysEx()
+        ) return null
+        val protocol = message[7].toInt() or (message[8].toInt() shl 7)
+        if (protocol == 0 || message[13].toInt() > 15) return null
+        val versionStart = if (protocol >= 2) 23 else 22
+        if (message.size < versionStart + 3 || message[versionStart - 1].toInt() !in 0..1 ||
+            message[message.lastIndex - 1] != 0.toByte()
+        ) return null
+        return message.asciiLabel(versionStart, message.lastIndex - 1)?.let { "SHRUB $it" }
     }
 
     /** Onyx names command 81, kind 255: a build-code read, not an update or configuration write. */
@@ -28,21 +47,19 @@ object FirmwareIdentity {
         if (message.size !in 17..62) return null
         val block = unpack(message) ?: return null
         if (!message.contentEquals(pack(block)) ||
-            !block.copyOfRange(0, 3).contentEquals(byteArrayOf(0, 0x59, 0x61))
+            !block.startsWith(0, 0x59, 0x61)
         ) return null
         val length = (block[3].toInt() and 255) or
                 ((block[4].toInt() and 255) shl 8) or ((block[5].toInt() and 255) shl 16)
         if (length !in 6..45 || block.size != length + 7) return null
-        val checksum = block.slice(2 until block.lastIndex).sumOf { it.toInt() and 255 }.inv() and 255
+        val checksum = (2 until block.lastIndex).sumOf { block[it].toInt() and 255 }.inv() and 255
         if ((block.last().toInt() and 255) != checksum ||
             block[6] != 0xff.toByte() || block[7] != 0.toByte() || block[8] != 0.toByte()
         ) return null
         val nameLength = block[9].toInt() and 255
         if (nameLength !in 1..40 || length != 5 + nameLength) return null
         // Byte 10 is the firmware's pack number, not a model or a fixed Onyx version.
-        val name = block.copyOfRange(11, block.lastIndex)
-        if (name.any { it.toInt() !in 32..126 }) return null
-        return name.toString(Charsets.US_ASCII).takeIf { it.isNotBlank() }
+        return block.asciiLabel(11, block.lastIndex)
     }
 
     fun editorRequest(): ByteArray = byteArrayOf(0xf0.toByte(), 0x7d, 0x46, 0x4c, 0x01, 0xf7.toByte())
@@ -54,14 +71,11 @@ object FirmwareIdentity {
      */
     fun parseEditor(message: ByteArray): String? {
         if (message.size !in 8..600 ||
-            !message.take(5).toByteArray().contentEquals(byteArrayOf(0xf0.toByte(), 0x7d, 0x46, 0x4c, 1)) ||
-            message.last() != 0xf7.toByte() ||
-            message.slice(1 until message.lastIndex).any { (it.toInt() and 255) > 127 }
+            !message.startsWith(0xf0, 0x7d, 0x46, 0x4c, 1) ||
+            !message.isSysEx()
         ) return null
         val end = (5 until minOf(30, message.lastIndex)).firstOrNull { message[it] == 0.toByte() } ?: return null
-        val name = message.copyOfRange(5, end)
-        if (name.isEmpty() || name.any { it.toInt() !in 32..126 }) return null
-        return name.toString(Charsets.US_ASCII).takeIf { it.isNotBlank() }
+        return message.asciiLabel(5, end)
     }
 
     fun request(): ByteArray = byteArrayOf(
@@ -71,13 +85,25 @@ object FirmwareIdentity {
     fun parse(message: ByteArray): String? {
         if (message.size != 41) return null
         val block = unpack(message) ?: return null
-        if (!block.copyOfRange(0, 6).contentEquals(byteArrayOf(0, 0x59, 0x11, 27, 0, 0))) return null
+        if (!block.startsWith(0, 0x59, 0x11, 27, 0, 0)) return null
         val name = block.copyOfRange(6, 33)
         val end = name.indexOf(0).let { if (it < 0) name.size else it }
         if (end == 0 || name.take(end).any { it.toInt() !in 32..126 } ||
             name.drop(end).any { it != 0.toByte() }) return null
         // Some replacement firmwares retain the stock checksum after changing the name.
         return String(name, 0, end, Charsets.US_ASCII)
+    }
+
+    private fun ByteArray.startsWith(vararg prefix: Int): Boolean =
+        size >= prefix.size && prefix.indices.all { (this[it].toInt() and 255) == prefix[it] }
+
+    private fun ByteArray.isSysEx(): Boolean =
+        size >= 2 && first() == 0xf0.toByte() && last() == 0xf7.toByte() &&
+                (1 until lastIndex).all { (this[it].toInt() and 255) <= 127 }
+
+    private fun ByteArray.asciiLabel(start: Int, end: Int): String? {
+        if (start >= end || (start until end).any { this[it].toInt() !in 32..126 }) return null
+        return String(this, start, end - start, Charsets.US_ASCII).takeIf { it.isNotBlank() }
     }
 
     private fun unpack(message: ByteArray): ByteArray? {

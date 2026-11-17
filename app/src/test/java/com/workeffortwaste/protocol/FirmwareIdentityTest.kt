@@ -89,7 +89,11 @@ class FirmwareIdentityTest {
             parse(if (requests.size == 1) reply("Pocket AMP_105") else buildReply(label))
         }
         assertEquals(
-            listOf(FirmwareIdentity.request().toList(), FirmwareIdentity.buildCodeRequest().toList()),
+            listOf(
+                FirmwareIdentity.request().toList(),
+                FirmwareIdentity.shrubRequest().toList(),
+                FirmwareIdentity.buildCodeRequest().toList(),
+            ),
             requests,
         )
         assertEquals(MidiIdentityEvidence("Pocket AMP_105", label), evidence)
@@ -110,7 +114,10 @@ class FirmwareIdentityTest {
                         else -> parse(reply("FM-1_900"))
                     }
                 }
-                val expected = mutableListOf(FirmwareIdentity.request().toList())
+                val expected = mutableListOf(
+                    FirmwareIdentity.request().toList(),
+                    FirmwareIdentity.shrubRequest().toList(),
+                )
                 if (includeLegacyEditor) expected += FirmwareIdentity.editorRequest().toList()
                 assertEquals(expected, requests)
                 assertEquals(MidiIdentityEvidence("FM-1_900", legacyLabel.takeIf { includeLegacyEditor }), evidence)
@@ -127,6 +134,67 @@ class FirmwareIdentityTest {
             fail("Expected transport failure")
         } catch (actual: IllegalStateException) {
             assertSame(failure, actual)
+        }
+    }
+
+    private fun shrubReply(): ByteArray =
+        ("F0 22 24 35 30 01 00 04 00 6F 6F 2F 43 0F 27 03 64 00 00 01 3A 00 00 " +
+                "56 31 2E 30 30 00 F7")
+            .split(" ").map { it.toInt(16).toByte() }.toByteArray()
+
+    @Test
+    fun shrubHelloReadsPhysicalCaptureAndProtocolOneLayout() {
+        assertEquals("SHRUB V1.00", FirmwareIdentity.parseShrub(shrubReply()))
+        val protocolOne = shrubReply().toMutableList().apply {
+            this[7] = 1
+            removeAt(19)
+        }.toByteArray()
+        assertEquals("SHRUB V1.00", FirmwareIdentity.parseShrub(protocolOne))
+    }
+
+    @Test
+    fun shrubHelloRejectsUnrelatedFailedAndMalformedReplies() {
+        val valid = shrubReply()
+        for (invalid in listOf(
+            byteArrayOf(), valid.copyOf(24), valid.dropLast(1).toByteArray(),
+            valid.copyOf().apply { this[0] = 0 },
+            valid.copyOf().apply { this[4] = 0x31 },
+            valid.copyOf().apply { this[5] = 2 },
+            valid.copyOf().apply { this[6] = 1 },
+            valid.copyOf().apply { this[7] = 0 },
+            valid.copyOf().apply { this[13] = 16 },
+            valid.copyOf().apply { this[22] = 2 },
+            valid.copyOf().apply { this[23] = 0 },
+            valid.copyOf().apply { this[23] = 0x80.toByte() },
+            valid.copyOf().apply { this[lastIndex - 1] = 1 },
+            valid.copyOf().apply { for (index in 23 until lastIndex - 1) this[index] = 32 },
+            reply("FM-1_900"), editorReply("JIANT 1.0"),
+        )) {
+            assertNull(FirmwareIdentity.parseShrub(invalid))
+        }
+    }
+
+    @Test
+    fun shrubFallbackSuppliesLabelWithoutInventingMUpgradeIdentity() {
+        for (mUpgradeIdentity in listOf(null, "FM-1_910")) {
+            val requests = mutableListOf<List<Byte>>()
+            val evidence = FirmwareIdentity.query(includeLegacyEditor = true) { request, parse ->
+                requests += request.toList()
+                when {
+                    request.contentEquals(FirmwareIdentity.request()) -> mUpgradeIdentity?.let { parse(reply(it)) }
+                    request.contentEquals(FirmwareIdentity.shrubRequest()) -> {
+                        assertEquals(listOf(0xf0, 0x22, 0x24, 0x35, 0x20, 1, 0xf7),
+                            request.map { it.toInt() and 255 })
+                        parse(shrubReply())
+                    }
+                    else -> null
+                }
+            }
+            assertEquals(MidiIdentityEvidence(mUpgradeIdentity, "SHRUB V1.00"), evidence)
+            assertEquals(
+                listOf(FirmwareIdentity.request().toList(), FirmwareIdentity.shrubRequest().toList()),
+                requests,
+            )
         }
     }
 

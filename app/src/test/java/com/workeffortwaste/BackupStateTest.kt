@@ -113,6 +113,23 @@ class BackupStateTest {
         assertEquals(null, primaryBackupName(null, null))
     }
 
+    @Test fun shrubLabelIsVisibleWithoutMUpgradeButDoesNotGuessDeviceFamily() {
+        val state = BackupState(
+            deviceMode = DeviceMode.MIDI,
+            editorFirmwareLabel = "SHRUB V1.00",
+        )
+        assertEquals("Device · SHRUB V1.00 · MIDI mode", state.deviceStatus)
+        assertEquals(DeviceFamily.UNKNOWN, state.effectiveDeviceFamily)
+        assertEquals("SHRUB V1.00", primaryBackupName(state.editorFirmwareLabel, state.firmwareIdentity))
+        assertEquals(
+            "FM-1 · SHRUB V1.00 · Recovery mode",
+            state.copy(
+                deviceMode = DeviceMode.DOWNLOAD,
+                deviceClassification = classifyDeviceFamily("FM-1_015", "4_1_0_0", 0x856014, false),
+            ).deviceStatus,
+        )
+    }
+
     @Test fun returningToMidiClearsRecoverySessionWithoutSuppressingDiscovery() {
         val disconnected = BackupState(
             deviceMode = DeviceMode.DOWNLOAD,

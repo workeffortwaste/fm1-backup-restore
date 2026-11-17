@@ -401,7 +401,8 @@ data class BackupState(
         get() = when {
             deviceMode == DeviceMode.MULTIPLE -> deviceMode.label
             deviceClassification.origin == FamilyEvidenceOrigin.CONFLICT -> "Conflicting evidence"
-            midiFamilyHint != DeviceFamily.UNKNOWN && !firmwareIdentity.isNullOrBlank() &&
+            (!editorFirmwareLabel.isNullOrBlank() ||
+                    midiFamilyHint != DeviceFamily.UNKNOWN && !firmwareIdentity.isNullOrBlank()) &&
                     (findingBootloader || deviceMode == DeviceMode.MIDI || deviceMode == DeviceMode.DOWNLOAD) -> {
                 val detail = if (deviceMode == DeviceMode.DOWNLOAD) "Recovery mode" else "MIDI mode"
                 val displayIdentity = editorFirmwareLabel?.takeIf { it.isNotBlank() } ?: firmwareIdentity
@@ -1022,7 +1023,7 @@ class BackupModel(
                         .takeIf { it != DeviceFamily.UNKNOWN }?.displayName ?: "Device"
                     val status = when {
                         !stillConnected -> StatusMessage()
-                        identity.mUpgradeIdentity == null -> statusMessage(
+                        identity.mUpgradeIdentity == null && identity.editorLabel == null -> statusMessage(
                             "Firmware identity unavailable",
                             "Connecting will automatically restart the device into recovery mode",
                         )
