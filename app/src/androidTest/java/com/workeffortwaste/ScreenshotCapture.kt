@@ -120,6 +120,46 @@ class ScreenshotCapture {
         instrumentation.uiAutomation.executeShellCommand(command)
             .let(ParcelFileDescriptor::AutoCloseInputStream).bufferedReader().use { it.readText() }
 
+    private fun demoCommand(arguments: String) {
+        val result = shell("am broadcast -a com.android.systemui.demo $arguments")
+        check("Broadcast completed" in result) { "Status bar demo command failed: $result" }
+    }
+
+    private fun withScreenshotStatusBar(capture: () -> Unit) {
+        check(shell("settings get global sysui_tuner_demo_on").trim() != "1") {
+            "Turn off status bar demo mode before capturing README screenshots."
+        }
+        val originalPermission = shell("settings get global sysui_demo_allowed").trim()
+        check(originalPermission in setOf("null", "0", "1")) {
+            "Unexpected status bar demo mode setting: $originalPermission"
+        }
+        shell("settings put global sysui_demo_allowed 1")
+        try {
+            check(shell("settings get global sysui_demo_allowed").trim() == "1") {
+                "Could not enable status bar demo mode."
+            }
+            demoCommand("-e command enter")
+            demoCommand("-e command battery -e level 100 -e plugged false")
+            demoCommand("-e command network -e wifi show -e level 4 -e fully true")
+            demoCommand("-e command network -e mobile show -e level 4 -e fully true")
+            SystemClock.sleep(500)
+            capture()
+        } finally {
+            try {
+                demoCommand("-e command exit")
+            } finally {
+                if (originalPermission == "null") {
+                    shell("settings delete global sysui_demo_allowed")
+                } else {
+                    shell("settings put global sysui_demo_allowed $originalPermission")
+                }
+                check(shell("settings get global sysui_demo_allowed").trim() == originalPermission) {
+                    "Could not restore status bar demo mode setting."
+                }
+            }
+        }
+    }
+
     /** Seeds the library with deterministic identities and recovery metadata. */
     private fun seed(
         names: List<String>,
@@ -472,6 +512,25 @@ class ScreenshotCapture {
                 SystemClock.sleep(600)
                 instrumentation.waitForIdleSync()
             }
+        }
+    }
+
+    @Test
+    fun captureReadme() = withScreenshotStatusBar {
+        captureMixedFm1Library()
+        setTheme(themes.first { it.fileName == "custom-black" })
+        seed(shortLibrary)
+        capture("custom-black-backup-75", transfer(FlashOperation.BACKUP, "Reading flash"))
+
+        seed(emptyList(), includePinnedFactory = false)
+        capture("custom-black-recovery-snapshot", connected) {
+            compose.onNodeWithText("Already started flashing custom firmware?").assertIsDisplayed()
+        }
+
+        seed(shortLibrary)
+        themes.forEach { theme ->
+            setTheme(theme)
+            capture("${theme.fileName}-connected", connected)
         }
     }
 

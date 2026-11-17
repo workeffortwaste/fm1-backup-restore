@@ -19,8 +19,8 @@ The latest version can be downloaded from the link below or from the releases se
 ## Screenshots
 
 <p>
-  <img width="300" alt="custom-black-connected" src="https://github.com/user-attachments/assets/188c1ddd-ef53-4da4-a872-152f37d54b02" alt="Backup library in the Black theme"/>
-  <img width="300" alt="custom-black-backup-75" src="https://github.com/user-attachments/assets/b0d8015a-6e8b-4590-aeb8-e3764a07eb92" alt="Backup progress in the Black theme"/>
+  <img width="300" src="./assets/custom-black-mixed-fm1-connected.png" alt="Mixed backup library in the Black theme"/>
+  <img width="300" src="./assets/custom-black-backup-75.png" alt="Backup progress in the Black theme"/>
 </p>
 
 ## Use cases
@@ -101,7 +101,7 @@ A fresh install of the app will nudge new users to create a recovery snapshot, a
 
 <table>
   <tr>
-    <td align="center"><img src="https://github.com/user-attachments/assets/bbc9b8af-d038-41f9-975e-95054e2eb947" width="180" alt="Material You theme"><br>Create a recovery snapshot
+    <td align="center"><img src="./assets/custom-black-recovery-snapshot.png" width="180" alt="Create a recovery snapshot"><br>Create a recovery snapshot
 </td>
   </tr>
 </table>
@@ -140,12 +140,12 @@ Choose **App icon** in _Settings_ to pick an icon independently of your theme. *
 
 <table>
   <tr>
-    <td align="center"><img src="https://github.com/user-attachments/assets/57f9b99a-5115-4c2d-a521-c8830c820007" width="180" alt="Black theme"><br>Black</td>
-    <td align="center"><img src="https://github.com/user-attachments/assets/e1517992-1883-450a-86d7-6e127451c5e6" width="180" alt="Orange theme"><br>Orange</td>
-    <td align="center"><img src="https://github.com/user-attachments/assets/779ac6de-17e2-48b8-b1a9-a0658a765b3b" width="180" alt="Purple theme"><br>Purple</td>
-    <td align="center"><img src="https://github.com/user-attachments/assets/aed34524-89a9-4f18-8275-1f5f4a95f1cd" width="180" alt="Green theme"><br>Green</td>
-    <td align="center"><img src="https://github.com/user-attachments/assets/b4ba2466-d18b-4bab-ac8d-877d5e501b10" width="180" alt="Blue theme"><br>Blue</td>
-    <td align="center"><img src="https://github.com/user-attachments/assets/ab6e7954-8069-4ecb-a36c-e36199517705" width="180" alt="Gray theme"><br>Gray</td>
+    <td align="center"><img src="./assets/custom-black-connected.png" width="180" alt="Black theme"><br>Black</td>
+    <td align="center"><img src="./assets/custom-orange-connected.png" width="180" alt="Orange theme"><br>Orange</td>
+    <td align="center"><img src="./assets/custom-purple-connected.png" width="180" alt="Purple theme"><br>Purple</td>
+    <td align="center"><img src="./assets/custom-green-connected.png" width="180" alt="Green theme"><br>Green</td>
+    <td align="center"><img src="./assets/custom-blue-connected.png" width="180" alt="Blue theme"><br>Blue</td>
+    <td align="center"><img src="./assets/custom-gray-connected.png" width="180" alt="Gray theme"><br>Gray</td>
   </tr>
 </table>
 
@@ -157,7 +157,7 @@ Choose **Material You** in Settings to use your device's colors throughout the a
 
 <table>
   <tr>
-    <td align="center"><img src="https://github.com/user-attachments/assets/56409052-cda9-4f34-8e9d-e92ca3f07786" width="180" alt="Material You theme"><br>Material You</td>
+    <td align="center"><img src="./assets/material-you-connected.png" width="180" alt="Material You theme"><br>Material You</td>
   </tr>
 </table>
 

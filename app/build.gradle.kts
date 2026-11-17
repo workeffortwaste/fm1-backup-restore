@@ -1,3 +1,7 @@
+import java.io.ByteArrayOutputStream
+import javax.inject.Inject
+import org.gradle.process.ExecOperations
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -127,5 +131,84 @@ tasks.register<Exec>("screenshotThemes") {
         "sh", "-c",
         "rm -rf '$outputPath' && mkdir -p '$outputPath' && " +
             "'$adb' pull /sdcard/Android/data/$debugApplicationId/files/theme-screenshots/. '$outputPath'",
+    )
+}
+
+abstract class ScreenshotReadme : DefaultTask() {
+    @get:Inject
+    abstract val execOperations: ExecOperations
+
+    @get:Input
+    abstract val adbPath: Property<String>
+
+    @get:Input
+    abstract val applicationId: Property<String>
+
+    @get:Input
+    abstract val screenshotNames: ListProperty<String>
+
+    @get:Internal
+    abstract val assetsDirectory: DirectoryProperty
+
+    @TaskAction
+    fun capture() {
+        val instrumentationOutput = ByteArrayOutputStream()
+        execOperations.exec {
+            commandLine(
+                adbPath.get(), "shell", "am", "instrument", "-w", "-e", "class",
+                "com.workeffortwaste.ScreenshotCapture#captureReadme",
+                "${applicationId.get()}.test/androidx.test.runner.AndroidJUnitRunner",
+            )
+            standardOutput = instrumentationOutput
+        }
+        val result = instrumentationOutput.toString(Charsets.UTF_8.name())
+        logger.lifecycle(result)
+        check(Regex("OK \\(1 test\\)").containsMatchIn(result)) {
+            "README screenshot instrumentation failed; see output above."
+        }
+        val temporaryOutput = temporaryDir
+        screenshotNames.get().forEach { name ->
+            val screenshot = temporaryOutput.resolve(name)
+            check(!screenshot.exists() || screenshot.delete()) { "Could not clear $screenshot" }
+        }
+        execOperations.exec {
+            commandLine(
+                adbPath.get(), "pull",
+                "/sdcard/Android/data/${applicationId.get()}/files/theme-screenshots/.",
+                temporaryOutput.path,
+            )
+        }
+        screenshotNames.get().forEach { name ->
+            val screenshot = temporaryOutput.resolve(name)
+            check(screenshot.isFile && screenshot.length() > 0) { "Missing screenshot: $screenshot" }
+        }
+        val assets = assetsDirectory.get().asFile
+        check(assets.isDirectory || assets.mkdirs()) { "Could not create $assets" }
+        screenshotNames.get().forEach { name ->
+            temporaryOutput.resolve(name).copyTo(assets.resolve(name), overwrite = true)
+        }
+    }
+}
+
+tasks.register<ScreenshotReadme>("screenshotReadme") {
+    group = "verification"
+    description = "Updates the README screenshots in <repo>/assets."
+    dependsOn("installDebug", "installDebugAndroidTest")
+    adbPath.set(adb)
+    applicationId.set(debugApplicationId)
+    assetsDirectory.set(rootProject.layout.projectDirectory.dir("assets"))
+    screenshotNames.set(
+        listOf(
+            "custom-black-mixed-fm1-connected",
+            "custom-black-backup-75",
+            "custom-black-recovery-snapshot",
+            "custom-black-connected",
+            "custom-orange-connected",
+            "custom-purple-connected",
+            "custom-green-connected",
+            "custom-blue-connected",
+            "custom-gray-connected",
+            "material-you-connected",
+        ).map { "$it.png" },
     )
 }
