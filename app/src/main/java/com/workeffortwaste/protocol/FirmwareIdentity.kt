@@ -10,10 +10,11 @@ object FirmwareIdentity {
     fun query(
         includeLegacyEditor: Boolean,
         probeBuildCode: (mUpgradeIdentity: String?) -> Boolean = { true },
+        knownMUpgradeIdentity: String? = null,
         read: (ByteArray, (ByteArray) -> String?) -> String?,
     ): MidiIdentityEvidence {
         // Independent family evidence first: it also gates the slower, firmware-specific label probes.
-        val mUpgradeIdentity = read(request(), ::parse)
+        val mUpgradeIdentity = knownMUpgradeIdentity ?: read(request(), ::parse)
         val editorLabel = read(shrubRequest(), ::parseShrub)
             ?: (if (probeBuildCode(mUpgradeIdentity)) read(buildCodeRequest(), ::parseBuildCode) else null)
             ?: (if (includeLegacyEditor) read(editorRequest(), ::parseEditor) else null)

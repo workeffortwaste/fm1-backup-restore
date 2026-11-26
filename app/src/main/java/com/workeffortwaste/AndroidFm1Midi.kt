@@ -4,7 +4,9 @@ import android.content.Context
 import android.hardware.usb.UsbDevice
 import android.media.midi.MidiDevice
 import android.media.midi.MidiDeviceInfo
+import android.media.midi.MidiInputPort
 import android.media.midi.MidiManager
+import android.media.midi.MidiOutputPort
 import android.media.midi.MidiReceiver
 import android.os.Handler
 import android.os.Build
@@ -21,7 +23,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Resolves a single FM1 USB MIDI input and owns its asynchronous Android handle lifecycle. */
+/** Resolves a USB MIDI command route and owns its asynchronous Android handle lifecycle. */
 object AndroidFm1Midi {
     @Suppress("DEPRECATION")
     private fun availableDevices(manager: MidiManager): List<MidiDeviceInfo> =
@@ -109,40 +111,54 @@ object AndroidFm1Midi {
         if (expectedDeviceId != null && deviceInfo.id != expectedDeviceId) {
             throw ProtocolException("Supported MIDI device changed during discovery. Refresh again.")
         }
-        val inputPort = deviceInfo.ports.singleOrNull { port -> port.type == MidiDeviceInfo.PortInfo.TYPE_INPUT }
-            ?: throw ProtocolException("Expected one supported MIDI input port; no SysEx was sent")
+        val inputPorts = deviceInfo.ports.filter { it.type == MidiDeviceInfo.PortInfo.TYPE_INPUT }
+            .map { it.portNumber }
+        val outputPorts = deviceInfo.ports.filter { it.type == MidiDeviceInfo.PortInfo.TYPE_OUTPUT }
+            .map { it.portNumber }
 
         val midiDevice = openDevice(manager, deviceInfo, checkCancelled)
         try {
             checkCancelled()
-            val port = midiDevice.openInputPort(inputPort.portNumber)
+            val route = Fm1BootloaderMidi.resolveIdentityRoute(inputPorts) { number ->
+                checkCancelled()
+                midiDevice.openInputPort(number)?.use { candidate ->
+                    readIdentity(midiDevice, outputPorts, candidate, checkCancelled,
+                        FirmwareIdentity.request(), FirmwareIdentity::parse)
+                }
+            }
+            val inputPort = route.inputPort
+            if (inputPort == null) {
+                onIdentity(MidiIdentityEvidence(mUpgradeIdentity = route.identity))
+                if (reboot) throw ProtocolException("Could not verify a unique MIDI command port. Restart was withheld.")
+                return midiDevice
+            }
+            val port = midiDevice.openInputPort(inputPort)
                 ?: throw ProtocolException(
                     "Supported MIDI port is busy or disconnected. The device might be connected in another app or browser."
                 )
             try {
                 checkCancelled()
-                val send: (ByteArray) -> Unit = { bytes ->
-                    port.send(bytes, 0, bytes.size)
-                }
-
                 @Suppress("DEPRECATION")
                 val usb = deviceInfo.properties.getParcelable<UsbDevice>(MidiDeviceInfo.PROPERTY_USB_DEVICE)
                 val identity = FirmwareIdentity.query(
                     includeLegacyEditor = usb?.vendorId == 0x1209 && usb.productId == 1,
+                    knownMUpgradeIdentity = route.identity.takeUnless { reboot },
                     probeBuildCode = { mUpgradeIdentity ->
                         // Only Onyx-family Pocket AMP firmware answers; skip its timeout elsewhere.
                         mUpgradeIdentity == null ||
                                 DeviceFamily.fromMidiIdentity(mUpgradeIdentity) == DeviceFamily.POCKET_AMP
                     },
                 ) { request, parse ->
-                    readIdentity(
-                        midiDevice, deviceInfo, send, checkCancelled,
-                        request, parse
-                    )
+                    readIdentity(midiDevice, outputPorts, port, checkCancelled, request, parse)
                 }
-                onIdentity(identity)
+                onIdentity(identity.copy(mUpgradeIdentity = identity.mUpgradeIdentity ?: route.identity))
                 checkCancelled()
-                if (reboot) Fm1BootloaderMidi.send { bytes -> port.send(bytes, 0, bytes.size) }
+                if (reboot) {
+                    if (route.identity != null && identity.mUpgradeIdentity != route.identity) {
+                        throw ProtocolException("The MIDI command port could not be reverified. Restart was withheld.")
+                    }
+                    Fm1BootloaderMidi.send { bytes -> port.send(bytes, 0, bytes.size) }
+                }
             } catch (failure: Exception) {
                 // Cleanup boundary only: send and cancellation errors must propagate without retry.
                 closeAfterFailure(port, failure)
@@ -169,60 +185,59 @@ object AndroidFm1Midi {
 
     private fun readIdentity(
         device: MidiDevice,
-        info: MidiDeviceInfo,
-        send: (ByteArray) -> Unit,
+        outputPorts: List<Int>,
+        input: MidiInputPort,
         checkCancelled: () -> Unit,
         request: ByteArray,
         parse: (ByteArray) -> String?,
     ): String? {
-        val outputInfo = info.ports.singleOrNull { it.type == MidiDeviceInfo.PortInfo.TYPE_OUTPUT }
-        if (outputInfo == null) {
-            Log.w("AndroidFm1Midi", "Firmware identity unavailable: expected one MIDI output")
-            return null
-        }
-        val output = device.openOutputPort(outputInfo.portNumber)
-        if (output == null) {
-            Log.w("AndroidFm1Midi", "Firmware identity unavailable: MIDI output busy or disconnected")
-            return null
-        }
-        output.use {
-            val response = CompletableFuture<String>()
-            val receiver = object : MidiReceiver() {
-                private val frame = ArrayList<Byte>(600)
-
-                @Synchronized
-                override fun onSend(data: ByteArray, offset: Int, count: Int, timestamp: Long) {
-                    for (index in offset until offset + count) {
-                        val byte = data[index]
-                        val value = byte.toInt() and 0xff
-                        if (value >= 0xf8) continue
-                        if (value == 0xf0) frame.clear()
-                        if (value == 0xf0 || frame.isNotEmpty()) {
-                            frame.add(byte)
-                            if (value == 0xf7) {
-                                parse(frame.toByteArray())?.let(response::complete)
-                                frame.clear()
-                            } else if (frame.size >= 600) frame.clear()
-                        }
-                    }
+        val response = CompletableFuture<String>()
+        val outputs = mutableListOf<MidiOutputPort>()
+        try {
+            for (number in outputPorts) {
+                checkCancelled()
+                val output = device.openOutputPort(number) ?: continue
+                outputs += output
+                output.connect(identityReceiver(parse, response))
+            }
+            if (outputs.isEmpty()) return null
+            input.send(request, 0, request.size)
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (System.nanoTime() < deadline) {
+                checkCancelled()
+                try {
+                    return response.get(100, TimeUnit.MILLISECONDS)
+                } catch (_: TimeoutException) {
+                    // Keep cancellation responsive while waiting for a reply.
                 }
             }
-            output.connect(receiver)
-            try {
-                send(request)
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
-                while (System.nanoTime() < deadline) {
-                    checkCancelled()
-                    try {
-                        return response.get(100, TimeUnit.MILLISECONDS)
-                    } catch (_: TimeoutException) {
-                        // Keep cancellation responsive while waiting for a reply.
-                    }
+            return null
+        } finally {
+            outputs.forEach(::closeAfterDisconnect)
+        }
+    }
+
+    // Each output has its own frame buffer because MIDI callbacks can arrive concurrently.
+    private fun identityReceiver(
+        parse: (ByteArray) -> String?,
+        response: CompletableFuture<String>,
+    ): MidiReceiver = object : MidiReceiver() {
+        private val frame = ArrayList<Byte>(600)
+
+        @Synchronized
+        override fun onSend(data: ByteArray, offset: Int, count: Int, timestamp: Long) {
+            for (index in offset until offset + count) {
+                val byte = data[index]
+                val value = byte.toInt() and 0xff
+                if (value >= 0xf8) continue
+                if (value == 0xf0) frame.clear()
+                if (value == 0xf0 || frame.isNotEmpty()) {
+                    frame.add(byte)
+                    if (value == 0xf7) {
+                        parse(frame.toByteArray())?.let(response::complete)
+                        frame.clear()
+                    } else if (frame.size >= 600) frame.clear()
                 }
-                Log.w("AndroidFm1Midi", "Firmware identity unavailable: no valid reply within two seconds")
-                return null
-            } finally {
-                output.disconnect(receiver)
             }
         }
     }
