@@ -28,6 +28,14 @@ class Fm1BootloaderMidiTest {
     }
 
     @Test
+    fun recognizesStockSmk37ProUsbIdOnlyWithMidiStreaming() {
+        assertTrue(Fm1BootloaderMidi.matchesUsb(0x4353, 0xb64b, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4353, 0xb64b, false))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4353, 0xb64c, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xb64b, true))
+    }
+
+    @Test
     fun selectsTheOnlyRespondingPortRegardlessOfItsIndex() {
         val probed = mutableListOf<Int>()
         val route = Fm1BootloaderMidi.resolveIdentityRoute(listOf(0, 1, 2)) { port ->
