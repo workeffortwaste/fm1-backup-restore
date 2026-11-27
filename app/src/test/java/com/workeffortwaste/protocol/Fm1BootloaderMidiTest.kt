@@ -27,6 +27,52 @@ class Fm1BootloaderMidiTest {
         assertFalse(Fm1BootloaderMidi.matchesUsb(0x1209, 0xc755, true))
     }
 
+    @Test
+    fun recognizesStockSmk37ProUsbIdOnlyWithMidiStreaming() {
+        assertTrue(Fm1BootloaderMidi.matchesUsb(0x4353, 0xb64b, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4353, 0xb64b, false))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4353, 0xb64c, true))
+        assertFalse(Fm1BootloaderMidi.matchesUsb(0x4c4a, 0xb64b, true))
+    }
+
+    @Test
+    fun selectsTheOnlyRespondingPortRegardlessOfItsIndex() {
+        val probed = mutableListOf<Int>()
+        val route = Fm1BootloaderMidi.resolveIdentityRoute(listOf(0, 1, 2)) { port ->
+            probed += port
+            "SMK-37 Pro_016".takeIf { port == 2 }
+        }
+
+        assertEquals(listOf(0, 1, 2), probed)
+        assertEquals(MidiIdentityRoute(2, "SMK-37 Pro_016"), route)
+    }
+
+    @Test
+    fun retainsAnAgreedIdentityWithoutChoosingBetweenRespondingPorts() {
+        val route = Fm1BootloaderMidi.resolveIdentityRoute(listOf(0, 1, 2)) { port ->
+            "SMK-37 Pro_016".takeIf { port != 1 }
+        }
+
+        assertEquals(MidiIdentityRoute(null, "SMK-37 Pro_016"), route)
+    }
+
+    @Test
+    fun leavesTheRouteUnresolvedWhenRepliesConflictOrAreMissing() {
+        val ports = listOf(0, 1, 2)
+        val conflicting = Fm1BootloaderMidi.resolveIdentityRoute(ports) { "Keyboard_$it" }
+        val absent = Fm1BootloaderMidi.resolveIdentityRoute(ports) { null }
+
+        assertEquals(MidiIdentityRoute(null), conflicting)
+        assertEquals(MidiIdentityRoute(null), absent)
+    }
+
+    @Test
+    fun keepsSinglePortFirmwareCompatibleWithoutRequiringAnIdentityReply() {
+        val route = Fm1BootloaderMidi.resolveIdentityRoute(listOf(3)) { error("Unexpected route probe") }
+
+        assertEquals(MidiIdentityRoute(3), route)
+    }
+
     /** Hardware expects these six bytes exactly; no channel framing or trailing message is allowed. */
     @Test
     fun sendsExactUserProvidedSysExOnce() {
